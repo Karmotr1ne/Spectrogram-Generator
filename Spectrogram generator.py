@@ -6,6 +6,7 @@ from pyabf import ABF
 from pathlib import Path
 import h5py
 from h5py import Dataset
+from matplotlib.backends.backend_pdf import PdfPages
 from tkinter import filedialog, Tk, messagebox
 from tqdm import tqdm
 
@@ -77,20 +78,20 @@ def load_signal_from_file(filepath, channel=0, combine_sweeps=True):
     else:
         raise ValueError(f"Unsupported file type: {filepath}")
 
-def generate_spectrogram(signal, fs, nperseg=2048):
+def generate_spectrogram(signal, fs, nperseg=2048, fmax=250):
     f, t, Sxx = spectrogram(signal, fs=fs, nperseg=nperseg)
-    return f, t, Sxx
+    freq_mask = f <= fmax
+    return f[freq_mask], t, Sxx[freq_mask, :]
 
-def plot_and_save_spectrogram(f, t, Sxx, out_path, title="Spectrogram"):
+def plot_spectrogram_page(f, t, Sxx, title):
     plt.figure(figsize=(10, 6))
-    plt.pcolormesh(t, f, 10 * np.log10(Sxx + 1e-12), shading='gouraud')
+    plt.pcolormesh(t, f, 10 * np.log10(Sxx + 1e-12), shading='gouraud', cmap='jet')  # 深蓝→深红
     plt.ylabel("Frequency [Hz]")
     plt.xlabel("Time [s]")
     plt.title(title)
     plt.colorbar(label="Power [dB]")
     plt.tight_layout()
-    plt.savefig(out_path)
-    plt.close()
+    return plt
 
 def process_all_files(input_dir, output_dir, channel=0, combine_sweeps=True):
     input_files = sorted(Path(input_dir).glob("*.abf")) + sorted(Path(input_dir).glob("*.h5"))
@@ -98,15 +99,23 @@ def process_all_files(input_dir, output_dir, channel=0, combine_sweeps=True):
     for file in tqdm(input_files, desc="Processing files"):
         try:
             results, fs = load_signal_from_file(str(file), channel=channel, combine_sweeps=combine_sweeps)
+
             if combine_sweeps:
                 f, t, Sxx = generate_spectrogram(results, fs)
-                out_filename = Path(output_dir) / (file.stem + "_spectrogram.pdf")
-                plot_and_save_spectrogram(f, t, Sxx, out_filename, title=file.stem)
+                pdf_path = Path(output_dir) / (file.stem + "_spectrogram.pdf")
+                with PdfPages(pdf_path) as pdf:
+                    fig = plot_spectrogram_page(f, t, Sxx, title=file.stem)
+                    pdf.savefig(fig.gcf())
+                    plt.close()
             else:
-                for idx, signal in enumerate(results):
-                    f, t, Sxx = generate_spectrogram(signal, fs)
-                    out_filename = Path(output_dir) / (file.stem + f"_sweep{idx+1}_spectrogram.pdf")
-                    plot_and_save_spectrogram(f, t, Sxx, out_filename, title=file.stem + f" sweep {idx+1}")
+                pdf_path = Path(output_dir) / (file.stem + "_allsweeps.pdf")
+                with PdfPages(pdf_path) as pdf:
+                    for idx, signal in enumerate(results):
+                        f, t, Sxx = generate_spectrogram(signal, fs)
+                        fig = plot_spectrogram_page(f, t, Sxx, title=f"{file.stem} - Sweep {idx + 1}")
+                        pdf.savefig(fig.gcf())
+                        plt.close()
+
         except Exception as e:
             print(f"[ERROR] Skipping {file.name}: {e}")
 
