@@ -1,116 +1,127 @@
-import h5py
+import os
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
-from pathlib import Path
-from pyabf import ABF
-from tkinter import Tk, filedialog
-from tqdm import tqdm
 from scipy.signal import spectrogram
-from matplotlib.backends.backend_pdf import PdfPages
+from pyabf import ABF
+from pathlib import Path
+import h5py
+from h5py import Dataset
+from tkinter import filedialog, Tk, messagebox
+from tqdm import tqdm
 
-
-# Get files
-def _load_abf_signal(filepath, channel=0):
-    abf = ABF(str(filepath))
-    all_sweeps = []
-    for sweep in range(abf.sweepCount):
-        abf.setSweep(sweep, channel=channel)
-        all_sweeps.append(abf.sweepY.copy())
-    signal = np.concatenate(all_sweeps)
+def _load_abf_signal(filepath, channel=0, combine_sweeps=True):
+    abf = ABF(filepath)
+    abf.setSweep(0)
     sampling_rate = abf.dataRate
-    return signal, sampling_rate
+    if combine_sweeps:
+        data = np.hstack([abf.setSweep(i, channel=channel) or abf.sweepY for i in range(abf.sweepCount)])
+    else:
+        abf.setSweep(0, channel=channel)
+        data = abf.sweepY
+    return data, sampling_rate
 
-def _load_h5_signal(filepath, channel=0, default_sampling_rate=10000):
+def _load_h5_signal(filepath, channel=0, default_sampling_rate=10000, combine_sweeps=True):
     all_traces = []
-    sampling_rate = default_sampling_rate
 
-    with h5py.File(filepath, 'r') as h5file:
-        data_root = h5file.get('data')
-        if data_root is None:
-            raise ValueError("No 'data' group found in HDF5 file.")
+    with h5py.File(filepath, "r") as h5file:
+        data_group = h5file.get("data")
+        if data_group is None:
+            raise ValueError("Missing 'data' group in HDF5 file.")
 
-        for block_key in data_root:
-            if not block_key.startswith("neo.block"):
+        block_key = next((k for k in data_group if k.startswith("neo.block")), None)
+        if block_key is None:
+            raise ValueError("No neo.block found under 'data'.")
+
+        groups_path = f"data/{block_key}/groups"
+        groups = h5file.get(groups_path)
+        if groups is None:
+            raise ValueError(f"Missing 'groups' path at {groups_path}")
+
+        for seg_key in groups:
+            data_array_path = f"{groups_path}/{seg_key}/data_arrays"
+            data_arrays = h5file.get(data_array_path)
+            if data_arrays is None:
                 continue
-            block = data_root.get(f"{block_key}/groups")
-            if block is None:
-                continue
-            for seg_key in block:
-                seg_group = block.get(f"{seg_key}/data_arrays")
-                if seg_group is None:
+
+            for da_key in data_arrays:
+                group = data_arrays[da_key]
+                if not isinstance(group, h5py.Group):
                     continue
-                for da_key in seg_group:
-                    dataset = seg_group.get(da_key)
-                    if dataset is None:
-                        continue
+                if "data" not in group:
+                    continue
+
+                dataset = group["data"]
+                try:
                     data = dataset[()]
                     if data.ndim == 2:
                         all_traces.append(data[:, channel])
                     elif data.ndim == 1:
                         all_traces.append(data)
+                except Exception:
+                    continue
 
     if not all_traces:
         raise ValueError(f"No valid signal data found in {filepath}")
 
-    signal = np.concatenate(all_traces)
-    return signal, sampling_rate
-
-def load_signal_from_file(filepath, channel=0, default_sampling_rate=10000):
-    filepath = Path(filepath)
-    suffix = filepath.suffix.lower()
-
-    if suffix == ".abf":
-        return _load_abf_signal(filepath, channel)
-    elif suffix == ".h5":
-        return _load_h5_signal(filepath, channel, default_sampling_rate)
+    if combine_sweeps:
+        signal = np.concatenate(all_traces)
     else:
-        raise ValueError(f"Unsupported file type: {suffix}")
+        return all_traces, default_sampling_rate
+    return signal, default_sampling_rate
 
-# Processing
-def process_data_file(filepath, output_dir, channel=0, default_sampling_rate=10000, nperseg=2048):
-    filepath = Path(filepath)
-    file_stem = filepath.stem
+def load_signal_from_file(filepath, channel=0, combine_sweeps=True):
+    if filepath.endswith(".abf"):
+        return _load_abf_signal(filepath, channel, combine_sweeps)
+    elif filepath.endswith(".h5"):
+        return _load_h5_signal(filepath, channel, combine_sweeps=combine_sweeps)
+    else:
+        raise ValueError(f"Unsupported file type: {filepath}")
 
-    try:
-        signal, fs = load_signal_from_file(filepath, channel=channel, default_sampling_rate=default_sampling_rate)
-    except Exception as e:
-        print(f"[ERROR] Skipping {filepath.name}: {e}")
+def generate_spectrogram(signal, fs, nperseg=2048):
+    f, t, Sxx = spectrogram(signal, fs=fs, nperseg=nperseg)
+    return f, t, Sxx
+
+def plot_and_save_spectrogram(f, t, Sxx, out_path, title="Spectrogram"):
+    plt.figure(figsize=(10, 6))
+    plt.pcolormesh(t, f, 10 * np.log10(Sxx + 1e-12), shading='gouraud')
+    plt.ylabel("Frequency [Hz]")
+    plt.xlabel("Time [s]")
+    plt.title(title)
+    plt.colorbar(label="Power [dB]")
+    plt.tight_layout()
+    plt.savefig(out_path)
+    plt.close()
+
+def process_all_files(input_dir, output_dir, channel=0, combine_sweeps=True):
+    input_files = sorted(Path(input_dir).glob("*.abf")) + sorted(Path(input_dir).glob("*.h5"))
+
+    for file in tqdm(input_files, desc="Processing files"):
+        try:
+            results, fs = load_signal_from_file(str(file), channel=channel, combine_sweeps=combine_sweeps)
+            if combine_sweeps:
+                f, t, Sxx = generate_spectrogram(results, fs)
+                out_filename = Path(output_dir) / (file.stem + "_spectrogram.pdf")
+                plot_and_save_spectrogram(f, t, Sxx, out_filename, title=file.stem)
+            else:
+                for idx, signal in enumerate(results):
+                    f, t, Sxx = generate_spectrogram(signal, fs)
+                    out_filename = Path(output_dir) / (file.stem + f"_sweep{idx+1}_spectrogram.pdf")
+                    plot_and_save_spectrogram(f, t, Sxx, out_filename, title=file.stem + f" sweep {idx+1}")
+        except Exception as e:
+            print(f"[ERROR] Skipping {file.name}: {e}")
+
+def main():
+    root = Tk()
+    root.withdraw()
+    input_dir = filedialog.askdirectory(title="Select Input Directory")
+    output_dir = filedialog.askdirectory(title="Select Output Directory")
+
+    if not input_dir or not output_dir:
+        print("No directory selected. Exiting.")
         return
 
-    # cal spectrogram
-    f, t, Sxx = spectrogram(signal, fs=fs, nperseg=2048)
-    power_db = 10 * np.log10(Sxx + 1e-12)
+    combine = messagebox.askyesno("Sweep Combination", "Combine all sweeps before spectrogram generation?")
+    process_all_files(input_dir, output_dir, combine_sweeps=combine)
 
-    # save PDF
-    pdf_path = Path(output_dir) / f"{file_stem}_spectrogram.pdf"
-    with PdfPages(pdf_path) as pdf:
-        plt.figure(figsize=(12, 5))
-        plt.pcolormesh(t, f, power_db, shading='gouraud')
-        plt.xlabel("Time (s)")
-        plt.ylabel("Frequency (Hz)")
-        plt.title(f"{file_stem} Spectrogram")
-        plt.colorbar(label="Power (dB)")
-        plt.tight_layout()
-        pdf.savefig()
-        plt.close()
-
-    # save CSV
-    df = pd.DataFrame(power_db, index=f, columns=t)
-    df.index.name = "Frequency_Hz"
-    csv_path = Path(output_dir) / f"{file_stem}_spectrogram_data.csv"
-    df.to_csv(csv_path)
-
-    print(f"[DONE] Processed: {filepath.name}")
-
-# get folder
-root = Tk()
-root.withdraw()
-input_dir = Path(filedialog.askdirectory(title="Select folder containing data files"))
-output_dir = Path(filedialog.askdirectory(title="Select folder to save results"))
-output_dir.mkdir(exist_ok=True)
-
-# run
-for file in tqdm(list(input_dir.glob("*")), desc="Processing files"):
-    if file.suffix.lower() in [".abf", ".h5"]:
-        process_data_file(file, output_dir)
+if __name__ == "__main__":
+    main()
