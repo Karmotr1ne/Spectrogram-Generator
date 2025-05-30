@@ -10,65 +10,36 @@ from matplotlib.backends.backend_pdf import PdfPages
 from tkinter import filedialog, Tk, messagebox
 from tqdm import tqdm
 
+# Signal Loading Functions
 def _load_abf_signal(filepath, channel=0, combine_sweeps=True):
     abf = ABF(filepath)
-    abf.setSweep(0)
     sampling_rate = abf.dataRate
     if combine_sweeps:
         data = np.hstack([abf.setSweep(i, channel=channel) or abf.sweepY for i in range(abf.sweepCount)])
     else:
-        abf.setSweep(0, channel=channel)
-        data = abf.sweepY
-    return data, sampling_rate
+        data = [abf.setSweep(i, channel=channel) or abf.sweepY.copy() for i in range(abf.sweepCount)]
+    return data if not combine_sweeps else (data, sampling_rate)
 
 def _load_h5_signal(filepath, channel=0, default_sampling_rate=10000, combine_sweeps=True):
     all_traces = []
-
     with h5py.File(filepath, "r") as h5file:
-        data_group = h5file.get("data")
-        if data_group is None:
-            raise ValueError("Missing 'data' group in HDF5 file.")
-
-        block_key = next((k for k in data_group if k.startswith("neo.block")), None)
-        if block_key is None:
-            raise ValueError("No neo.block found under 'data'.")
-
-        groups_path = f"data/{block_key}/groups"
-        groups = h5file.get(groups_path)
-        if groups is None:
-            raise ValueError(f"Missing 'groups' path at {groups_path}")
-
+        block_key = next((k for k in h5file["data"] if k.startswith("neo.block")), None)
+        groups = h5file[f"data/{block_key}/groups"]
         for seg_key in groups:
-            data_array_path = f"{groups_path}/{seg_key}/data_arrays"
-            data_arrays = h5file.get(data_array_path)
-            if data_arrays is None:
-                continue
-
-            for da_key in data_arrays:
-                group = data_arrays[da_key]
-                if not isinstance(group, h5py.Group):
-                    continue
-                if "data" not in group:
-                    continue
-
-                dataset = group["data"]
-                try:
-                    data = dataset[()]
-                    if data.ndim == 2:
-                        all_traces.append(data[:, channel])
-                    elif data.ndim == 1:
-                        all_traces.append(data)
-                except Exception:
-                    continue
+            da_path = f"data/{block_key}/groups/{seg_key}/data_arrays"
+            for da_key in h5file[da_path]:
+                group = h5file[f"{da_path}/{da_key}"]
+                if isinstance(group, h5py.Group) and "data" in group:
+                    arr = group["data"][()]
+                    if arr.ndim == 2 and arr.shape[1] > channel:
+                        all_traces.append(arr[:, channel])
+                    elif arr.ndim == 1:
+                        all_traces.append(arr)
 
     if not all_traces:
-        raise ValueError(f"No valid signal data found in {filepath}")
+        raise ValueError("No sweep data found")
 
-    if combine_sweeps:
-        signal = np.concatenate(all_traces)
-    else:
-        return all_traces, default_sampling_rate
-    return signal, default_sampling_rate
+    return (np.concatenate(all_traces), default_sampling_rate) if combine_sweeps else (all_traces, default_sampling_rate)
 
 def load_signal_from_file(filepath, channel=0, combine_sweeps=True):
     if filepath.endswith(".abf"):
@@ -78,21 +49,31 @@ def load_signal_from_file(filepath, channel=0, combine_sweeps=True):
     else:
         raise ValueError(f"Unsupported file type: {filepath}")
 
-def generate_spectrogram(signal, fs, nperseg=2048, fmax=250):
+# Spectrogram Generation
+def generate_raw_spectrogram(signal, fs, nperseg=2048, fmax=250):
     f, t, Sxx = spectrogram(signal, fs=fs, nperseg=nperseg)
     freq_mask = f <= fmax
     return f[freq_mask], t, Sxx[freq_mask, :]
 
-def plot_spectrogram_page(f, t, Sxx, title):
-    plt.figure(figsize=(10, 6))
-    plt.pcolormesh(t, f, 10 * np.log10(Sxx + 1e-12), shading='gouraud', cmap='jet')  # 深蓝→深红
-    plt.ylabel("Frequency [Hz]")
-    plt.xlabel("Time [s]")
-    plt.title(title)
-    plt.colorbar(label="Power [dB]")
-    plt.tight_layout()
-    return plt
+# Plotting Functions
+def plot_multi_page_pdf(sweep_data_list, file_stem, output_dir):
+    output_path = os.path.join(output_dir, f"{file_stem}_allsweeps.pdf")
+    vmin = min(np.min(Sxx) for (f, t, Sxx) in sweep_data_list)
+    vmax = max(np.max(Sxx) for (f, t, Sxx) in sweep_data_list)
 
+    with PdfPages(output_path) as pdf:
+        for idx, (f, t, Sxx) in enumerate(sweep_data_list):
+            plt.figure(figsize=(10, 6))
+            plt.pcolormesh(t, f, Sxx, shading='gouraud', cmap='jet', vmin=vmin, vmax=vmax)
+            plt.colorbar(label='Power (uV^2/Hz)')
+            plt.title(f"{file_stem} - Sweep {idx + 1}")
+            plt.xlabel("Time (s)")
+            plt.ylabel("Frequency (Hz)")
+            plt.tight_layout()
+            pdf.savefig()
+            plt.close()
+
+# File Processing
 def process_all_files(input_dir, output_dir, channel=0, combine_sweeps=True):
     input_files = sorted(Path(input_dir).glob("*.abf")) + sorted(Path(input_dir).glob("*.h5"))
 
@@ -101,24 +82,28 @@ def process_all_files(input_dir, output_dir, channel=0, combine_sweeps=True):
             results, fs = load_signal_from_file(str(file), channel=channel, combine_sweeps=combine_sweeps)
 
             if combine_sweeps:
-                f, t, Sxx = generate_spectrogram(results, fs)
-                pdf_path = Path(output_dir) / (file.stem + "_spectrogram.pdf")
+                f, t, Sxx = generate_raw_spectrogram(results, fs)
+                pdf_path = Path(output_dir) / f"{file.stem}_spectrogram.pdf"
                 with PdfPages(pdf_path) as pdf:
-                    fig = plot_spectrogram_page(f, t, Sxx, title=file.stem)
-                    pdf.savefig(fig.gcf())
+                    plt.figure(figsize=(10, 6))
+                    plt.pcolormesh(t, f, Sxx, shading='gouraud', cmap='jet', vmin=np.min(Sxx), vmax=np.max(Sxx))
+                    plt.colorbar(label='Power (uV^2/Hz)')
+                    plt.title(file.stem)
+                    plt.xlabel("Time (s)")
+                    plt.ylabel("Frequency (Hz)")
+                    plt.tight_layout()
+                    pdf.savefig()
                     plt.close()
             else:
-                pdf_path = Path(output_dir) / (file.stem + "_allsweeps.pdf")
-                with PdfPages(pdf_path) as pdf:
-                    for idx, signal in enumerate(results):
-                        f, t, Sxx = generate_spectrogram(signal, fs)
-                        fig = plot_spectrogram_page(f, t, Sxx, title=f"{file.stem} - Sweep {idx + 1}")
-                        pdf.savefig(fig.gcf())
-                        plt.close()
+                sweep_results = []
+                for signal in results:
+                    sweep_results.append(generate_raw_spectrogram(signal, fs))
+                plot_multi_page_pdf(sweep_results, file.stem, output_dir)
 
         except Exception as e:
             print(f"[ERROR] Skipping {file.name}: {e}")
 
+# Entry Point
 def main():
     root = Tk()
     root.withdraw()
@@ -134,3 +119,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
