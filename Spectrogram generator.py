@@ -80,7 +80,7 @@ def load_signal_from_file(filepath, channel=0, combine_sweeps=True):
         raise ValueError(f"Unsupported file type: {filepath}")
 
 # Spectrogram Generation
-def generate_raw_spectrogram(signal, fs, nperseg=2048, fmax=50):
+def generate_raw_spectrogram(signal, fs, nperseg=2048, fmax=80):
     f, t, Sxx = spectrogram(signal, fs=fs, nperseg=nperseg)
     freq_mask = f <= fmax
     return f[freq_mask], t, Sxx[freq_mask, :]
