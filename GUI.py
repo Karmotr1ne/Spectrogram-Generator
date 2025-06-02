@@ -10,9 +10,6 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.settings = QtCore.QSettings("MyCompany", "SpectrogramGenerator")
-        self.loaded_paths = set()
-
         self.manager = SweepManager()
 
         self.setWindowTitle("Spectrogram Generator")
@@ -119,27 +116,95 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         # Tree item
         self.file_tree.itemClicked.connect(self.on_tree_item_clicked)
 
+        #save parameter and path
+        self.settings = QtCore.QSettings("MyCompany", "SpectrogramGenerator")
+        
+        last_dir = self.settings.value("lastDir", "", type=str)
+        self.lastDir = last_dir 
+
+        draw_raw = self.settings.value("drawRaw", True, type=bool)
+        self.chk_original.setChecked(draw_raw)
+
+        self.chk_original.toggled.connect(
+            lambda v: self.settings.setValue("drawRaw", v)
+        )
+
+        draw_proc = self.settings.value("drawProc", True, type=bool)
+        self.chk_processed.setChecked(draw_proc)
+        self.chk_processed.toggled.connect(
+            lambda v: self.settings.setValue("drawProc", v)
+        )
+
+        combine = self.settings.value("combineAll", False, type=bool)
+        self.chk_combine.setChecked(combine)
+        self.chk_combine.toggled.connect(
+            lambda v: self.settings.setValue("combineAll", v)
+        )
+
+        mode_raw = self.settings.value("modeRaw", "Signal", type=str)
+        idx_raw = self.combo_display_org.findText(mode_raw)
+        if idx_raw >= 0:
+            self.combo_display_org.setCurrentIndex(idx_raw)
+        self.combo_display_org.currentTextChanged.connect(
+            lambda txt: self.settings.setValue("modeRaw", txt)
+        )
+
+        mode_proc = self.settings.value("modeProc", "Signal", type=str)
+        idx_proc = self.combo_display_proc.findText(mode_proc)
+        if idx_proc >= 0:
+            self.combo_display_proc.setCurrentIndex(idx_proc)
+        self.combo_display_proc.currentTextChanged.connect(
+            lambda txt: self.settings.setValue("modeProc", txt)
+        )
+
+        nperseg_val = self.settings.value("nperseg", 2048, type=int)
+        self.spin_nperseg.setValue(nperseg_val)
+        self.spin_nperseg.valueChanged.connect(
+            lambda v: self.settings.setValue("nperseg", v)
+        )
+
+        fmax_val = self.settings.value("fmax", 30.0, type=float)
+        self.spin_fmax.setValue(fmax_val)
+        self.spin_fmax.valueChanged.connect(
+            lambda v: self.settings.setValue("fmax", v)
+        )
+
+        log_scale = self.settings.value("logScale", False, type=bool)
+        self.chk_log.setChecked(log_scale)
+        self.chk_log.toggled.connect(
+        lambda v: self.settings.setValue("logScale", v)
+        ) 
+
     def add_files(self):
         files, _ = QtWidgets.QFileDialog.getOpenFileNames(
-            self, "Select .abf or .h5 Files", "", "Signal Files (*.abf *.h5)"
+            self,
+            "Select Files",
+            self.settings.value("lastDir", ""),  
+            "All Files (*);;ABF Files (*.abf);;HDF5 Files (*.h5)"
         )
+        if not files:
+            return
+
+        last_dir = os.path.dirname(files[0])
+        self.settings.setValue("lastDir", last_dir)
+
         for fpath in files:
-            if fpath in self.loaded_paths:
-                continue
             try:
                 display_names = self.manager.load_file(fpath)
                 if not display_names:
                     continue
                 for name in display_names:
-                    item = QtWidgets.QTreeWidgetItem([name])
-                    item.setData(0, QtCore.Qt.UserRole, name)
-                    self.file_tree.addTopLevelItem(item)
-                self.loaded_paths.add(fpath)
+                    self._add_tree_item(name)
                 self.status_label.setText(f"Status: Loaded {os.path.basename(fpath)}")
             except Exception as e:
                 QtWidgets.QMessageBox.critical(
                     self, "Load Error", f"Error loading {fpath}:\n{str(e)}"
                 )
+
+    def _add_tree_item(self, display_name):
+        item = QtWidgets.QTreeWidgetItem([display_name])
+        item.setData(0, QtCore.Qt.UserRole, display_name)
+        self.file_tree.addTopLevelItem(item)
 
     def remove_selected(self):
         """
@@ -343,21 +408,23 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
             self.canvas.draw()
             self.status_label.setText(f"Plotted single sweep: {first_name}")
 
-    def reload_all(self):
+    def clear_all(self):
         self.file_tree.clear()
         self.manager.data.clear()
-        self.loaded_paths.clear()
 
     def open_context_menu(self, position):
         menu = QtWidgets.QMenu()
         remove_action = menu.addAction("Remove Selected")
-        reload_action = menu.addAction("Reload All")
+        select_all_action = menu.addAction("Select All")
+        clear_action = menu.addAction("clear All")
 
         action = menu.exec_(self.file_tree.viewport().mapToGlobal(position))
         if action == remove_action:
             self.remove_selected()
-        elif action == reload_action:
-            self.reload_all()
+        elif action == clear_action:
+            self.clear_all()
+        elif action == select_all_action:
+            self.file_tree.selectAll()
 
     def export_pdf(self):
         """
