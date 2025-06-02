@@ -190,55 +190,158 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         self.status_label.setText(f"Status: Plotted {display_name} ({label})")
 
     def plot_selected(self):
+        from scipy.signal import spectrogram  # global_max
+
         selected_items = self.file_tree.selectedItems()
         if not selected_items:
             QtWidgets.QMessageBox.warning(self, "Warning", "No sweep selected.")
             return
+        
+        combine = self.chk_combine.isChecked()
 
-        # For simplicity: only plot the first selected item here.
-        display_name = selected_items[0].data(0, QtCore.Qt.UserRole)
+        raw_list = []
+        proc_list = []
+        fs_list = []
+        display_order = []
+        for item in selected_items:
+            name = item.data(0, QtCore.Qt.UserRole)
+            display_order.append(name)
 
-        # Build settings dict from UI
+            try:
+                sig_raw, _ = self.manager.get_signal(name, processed=False)
+            except KeyError:
+                sig_raw = None
+            try:
+                sig_proc, fs = self.manager.get_signal(name, processed=True)
+            except KeyError:
+                sig_proc, fs = sig_raw, None
+
+            if fs is None:
+                QtWidgets.QMessageBox.critical(self, "Error", f"No sampling rate for {name}.")
+                return
+
+            if self.chk_original.isChecked() and sig_raw is None and sig_proc is not None:
+                sig_raw = np.zeros_like(sig_proc)
+            if self.chk_processed.isChecked() and sig_proc is None and sig_raw is not None:
+                sig_proc = sig_raw.copy()
+
+            raw_list.append(sig_raw)
+            proc_list.append(sig_proc)
+            fs_list.append(fs)
+
+        if len(set(fs_list)) > 1:
+            QtWidgets.QMessageBox.critical(self, "Error", "Selected sweeps have different sampling rates.")
+            return
+        fs0 = fs_list[0]
+
         settings = {
-            "draw_raw": self.chk_original.isChecked(),
+            "draw_raw":  self.chk_original.isChecked(),
             "draw_proc": self.chk_processed.isChecked(),
-            "mode_raw": self.combo_display_org.currentText(),
+            "mode_raw":  self.combo_display_org.currentText(),   # "Signal"/"Spectrogram"/"Both"
             "mode_proc": self.combo_display_proc.currentText(),
-            "fmax": self.spin_fmax.value(),
-            "nperseg": self.spin_nperseg.value(),
+            "nperseg":   self.spin_nperseg.value(),
+            "fmax":      self.spin_fmax.value(),
             "log_scale": self.chk_log.isChecked()
         }
 
-        try:
-            # Attempt to fetch raw and processed
-            signal_raw, fs_raw = self.manager.get_signal(display_name, processed=False)
-        except KeyError:
-            signal_raw, fs_raw = None, None
+        if combine:
 
-        try:
-            signal_proc, fs_proc = self.manager.get_signal(display_name, processed=True)
-        except KeyError:
-            if signal_raw is not None:
-                signal_proc, fs_proc = signal_raw, fs_raw
-            else:
-                QtWidgets.QMessageBox.warning(
-                    self, "Error", f"No 'processed' or 'raw' for {display_name}."
-                )
+            global_max = None
+            need_spec = (
+                settings["draw_proc"] and settings["mode_proc"] in ["Spectrogram", "Both"]
+            ) or (
+                settings["draw_raw"] and settings["mode_raw"] in ["Spectrogram", "Both"]
+            )
+            if need_spec:
+                Sxx_max_list = []
+                for sig in (proc_list if settings["draw_proc"] else raw_list):
+                    if sig is None:
+                        continue
+                    f_i, t_i, Sxx_i = spectrogram(
+                        sig, fs=fs0,
+                        nperseg=settings["nperseg"],
+                        scaling="density",
+                        mode="psd"
+                    )
+                    mask_i = f_i <= settings["fmax"]
+                    Sxx_i = Sxx_i[mask_i, :]
+                    if Sxx_i.size > 0:
+                        Sxx_max_list.append(np.max(Sxx_i))
+                if Sxx_max_list:
+                    global_max = max(Sxx_max_list)
+
+            sig_raw_concat = None
+            sig_proc_concat = None
+            if settings["draw_raw"]:
+                arrays = [arr for arr in raw_list if arr is not None]
+                if arrays:
+                    sig_raw_concat = np.concatenate(arrays)
+            if settings["draw_proc"]:
+                arrays = [arr for arr in proc_list if arr is not None]
+                if arrays:
+                    sig_proc_concat = np.concatenate(arrays)
+
+            self.canvas.clear()
+            self.canvas.plot_extra(
+                signal_raw  = sig_raw_concat,
+                signal_proc = sig_proc_concat,
+                fs          = fs0,
+                settings    = settings,
+                global_max  = global_max
+            )
+            self.canvas.draw()
+            self.status_label.setText(f"Plotted concatenated {len(display_order)} sweeps.")
+
+        else:
+
+            first_name = display_order[0]
+            try:
+                sig_raw, _ = self.manager.get_signal(first_name, processed=False)
+            except KeyError:
+                sig_raw = None
+            try:
+                sig_proc, fs = self.manager.get_signal(first_name, processed=True)
+            except KeyError:
+                sig_proc, fs = sig_raw, None
+
+            if fs is None:
+                QtWidgets.QMessageBox.critical(self, "Error", f"No sampling rate for {first_name}.")
                 return
 
-        fs = fs_proc if fs_proc is not None else fs_raw
-        if fs is None:
-            QtWidgets.QMessageBox.warning(
-                self, "Error", f"No valid sampling rate for {display_name}."
+            if settings["draw_raw"] and sig_raw is None and sig_proc is not None:
+                sig_raw = np.zeros_like(sig_proc)
+            if settings["draw_proc"] and sig_proc is None and sig_raw is not None:
+                sig_proc = sig_raw.copy()
+
+            global_max = None
+            need_spec = (
+                settings["draw_proc"] and settings["mode_proc"] in ["Spectrogram", "Both"]
+            ) or (
+                settings["draw_raw"] and settings["mode_raw"] in ["Spectrogram", "Both"]
             )
-            return
+            if need_spec:
+                data_sig = sig_proc if sig_proc is not None else sig_raw
+                f_i, t_i, Sxx_i = spectrogram(
+                    data_sig, fs=fs,
+                    nperseg=settings["nperseg"],
+                    scaling="density",
+                    mode="psd"
+                )
+                mask_i = f_i <= settings["fmax"]
+                Sxx_i = Sxx_i[mask_i, :]
+                if Sxx_i.size > 0:
+                    global_max = np.max(Sxx_i)
 
-        if settings["draw_raw"] and signal_raw is None:
-            signal_raw = np.zeros_like(signal_proc)
-            fs_raw = fs
-
-        self.canvas.plot_extra(signal_raw, signal_proc, fs, settings)
-        self.status_label.setText(f"Status: Drew signals for {display_name}")
+            self.canvas.clear()
+            self.canvas.plot_extra(
+                signal_raw  = sig_raw,
+                signal_proc = sig_proc,
+                fs          = fs,
+                settings    = settings,
+                global_max  = global_max
+            )
+            self.canvas.draw()
+            self.status_label.setText(f"Plotted single sweep: {first_name}")
 
     def reload_all(self):
         self.file_tree.clear()
