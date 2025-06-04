@@ -18,7 +18,7 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         self.setCentralWidget(central)
         main_layout = QtWidgets.QHBoxLayout(central)
 
-        # Left panel: File tree + UI
+        # Left panel: File tree   UI
         left_panel = QtWidgets.QWidget()
         left_layout = QtWidgets.QVBoxLayout(left_panel)
         main_layout.addWidget(left_panel, stretch=1)
@@ -82,14 +82,25 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         left_layout.addLayout(param_layout)
 
         # Plot / Export buttons
-        action_layout = QtWidgets.QHBoxLayout()
-        self.btn_plot = QtWidgets.QPushButton("Plot")
+        pd_layout = QtWidgets.QHBoxLayout()
+        self.btn_plot   = QtWidgets.QPushButton("Plot")
+        self.btn_detect = QtWidgets.QPushButton("Detect")
+        lbl_threshold = QtWidgets.QLabel("Threshold (SD):", self)
+        self.spin_threshold = QtWidgets.QDoubleSpinBox(self)
+        self.spin_threshold.setRange(0.1, 10.0)
+        self.spin_threshold.setSingleStep(0.1)
+        pd_layout.addWidget(lbl_threshold)
+        pd_layout.addWidget(self.spin_threshold)
+        pd_layout.addWidget(self.btn_plot)
+        pd_layout.addWidget(self.btn_detect)
+        left_layout.addLayout(pd_layout)
+
+        export_layout = QtWidgets.QHBoxLayout()
         self.btn_export_pdf = QtWidgets.QPushButton("PDF")
         self.btn_export_csv = QtWidgets.QPushButton("CSV")
-        action_layout.addWidget(self.btn_plot)
-        action_layout.addWidget(self.btn_export_pdf)
-        action_layout.addWidget(self.btn_export_csv)
-        left_layout.addLayout(action_layout)
+        export_layout.addWidget(self.btn_export_pdf)
+        export_layout.addWidget(self.btn_export_csv)
+        left_layout.addLayout(export_layout)
 
         left_layout.addStretch()
 
@@ -110,6 +121,7 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         self.btn_add.clicked.connect(self.add_files)
         self.btn_remove.clicked.connect(self.remove_selected)
         self.btn_plot.clicked.connect(self.plot_selected)
+        self.btn_detect.clicked.connect(self.on_detect_clicked)
         self.btn_export_pdf.clicked.connect(self.export_pdf)
         self.btn_export_csv.clicked.connect(self.export_csv)
 
@@ -139,6 +151,12 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         self.chk_combine.setChecked(combine)
         self.chk_combine.toggled.connect(
             lambda v: self.settings.setValue("combineAll", v)
+        )
+
+        saved_thr = self.settings.value("thresholdMult", 3.0, type=float)
+        self.spin_threshold.setValue(saved_thr)
+        self.spin_threshold.valueChanged.connect(
+            lambda v: self.settings.setValue("thresholdMult", v)
         )
 
         mode_raw = self.settings.value("modeRaw", "Signal", type=str)
@@ -425,6 +443,21 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
             self.clear_all()
         elif action == select_all_action:
             self.file_tree.selectAll()
+
+    def on_detect_clicked(self):
+        if not hasattr(self.canvas, "last_Sxx_norm"):
+            QtWidgets.QMessageBox.warning(self, "Warning", "Please plot a spectrogram first.")
+            return
+ 
+        threshold_mult = self.spin_threshold.value()
+        event_pairs = self.canvas.detect_power_events(threshold_mult)
+        
+        if not event_pairs:
+            QtWidgets.QMessageBox.information(self, "Detect Result", "No events detected.")
+            return
+
+        self.canvas.plot_detection_lines(event_pairs)
+        self.status_label.setText(f"Detected {len(event_pairs)} event(s).")
 
     def export_pdf(self):
         """

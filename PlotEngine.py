@@ -88,6 +88,11 @@ class PlotEngine(FigureCanvas):
         self.ax_spec.set_xlim(0, t[-1])
         self.ax_spec.set_ylim(0, f[-1])
 
+        #cache
+        self.last_f       = f.copy()
+        self.last_t       = t.copy()
+        self.last_Sxx_norm = Sxx_norm.copy()       
+
     def plot_extra(self, signal_raw, signal_proc, fs, settings, global_max=None):
         self.clear()
 
@@ -133,3 +138,49 @@ class PlotEngine(FigureCanvas):
                       (1.00, 0.00, 0.00)]
         }
         return LinearSegmentedColormap('CustomMap', cdict)
+   
+    def detect_power_events(self, threshold_mult):
+         if not hasattr(self, "last_Sxx_norm"):
+             return []
+
+         S = self.last_Sxx_norm
+
+         if S.size == 0:
+             return []
+         pwr_seq = np.sum(S, axis=0)
+
+         diff_seq = np.diff(pwr_seq)
+
+         sigma = np.std(diff_seq)
+
+         thr_pos = threshold_mult * sigma
+         thr_neg = -threshold_mult * sigma
+ 
+         idx_rise = np.where(diff_seq > thr_pos)[0]
+         idx_fall = np.where(diff_seq < thr_neg)[0]
+ 
+         t_rise_all = self.last_t[idx_rise + 1]
+         t_fall_all = self.last_t[idx_fall + 1]
+
+         events = []
+         j_start = 0
+         for tr in t_rise_all:
+             while j_start < len(t_fall_all) and t_fall_all[j_start] <= tr:
+                 j_start +=  1
+             if j_start < len(t_fall_all):
+                 tf = t_fall_all[j_start]
+                 events.append((tr, tf))
+                 j_start +=  1
+             else:
+                 break
+ 
+         return events
+
+    def plot_detection_lines(self, event_pairs):
+        for tr, tf in event_pairs:
+            self.ax_signal.axvline(tr, color='blue', linestyle='--', linewidth=1)
+            self.ax_signal.axvline(tf, color='blue', linestyle='--', linewidth=1)
+
+            self.ax_spec.axvline(tr, color='blue', linestyle='--', linewidth=1)
+            self.ax_spec.axvline(tf, color='blue', linestyle='--', linewidth=1)
+        self.draw()
