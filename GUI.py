@@ -73,6 +73,14 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         self.spin_nperseg.setSingleStep(32)
         self.spin_nperseg.setValue(1024)
         param_layout.addWidget(self.spin_nperseg)
+        left_layout.addLayout(param_layout)
+
+        param_layout = QtWidgets.QHBoxLayout()
+        param_layout.addWidget(QtWidgets.QLabel("Min Freq:"))
+        self.spin_fmin = QtWidgets.QDoubleSpinBox()
+        self.spin_fmin.setRange(0, 5000)
+        self.spin_fmin.setValue(0.0)
+        param_layout.addWidget(self.spin_fmin)
         param_layout.addStretch(1)
         param_layout.addWidget(QtWidgets.QLabel("Max Freq:"))
         self.spin_fmax = QtWidgets.QDoubleSpinBox()
@@ -85,7 +93,7 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         pd_layout = QtWidgets.QHBoxLayout()
         self.btn_plot   = QtWidgets.QPushButton("Plot")
         self.btn_detect = QtWidgets.QPushButton("Detect")
-        lbl_threshold = QtWidgets.QLabel("Threshold (SD):", self)
+        lbl_threshold = QtWidgets.QLabel("SD:", self)
         self.spin_threshold = QtWidgets.QDoubleSpinBox(self)
         self.spin_threshold.setRange(0.1, 10.0)
         self.spin_threshold.setSingleStep(0.1)
@@ -179,6 +187,12 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         self.spin_nperseg.setValue(nperseg_val)
         self.spin_nperseg.valueChanged.connect(
             lambda v: self.settings.setValue("nperseg", v)
+        )
+
+        fmin_val = self.settings.value("fmin", 0.0, type=float)
+        self.spin_fmin.setValue(fmin_val)
+        self.spin_fmin.valueChanged.connect(
+            lambda v: self.settings.setValue("fmin", v)
         )
 
         fmax_val = self.settings.value("fmax", 30.0, type=float)
@@ -323,6 +337,7 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
             "mode_raw":  self.combo_display_org.currentText(),   # "Signal"/"Spectrogram"/"Both"
             "mode_proc": self.combo_display_proc.currentText(),
             "nperseg":   self.spin_nperseg.value(),
+            "fmin":      self.spin_fmin.value(),
             "fmax":      self.spin_fmax.value(),
             "log_scale": self.chk_log.isChecked()
         }
@@ -346,7 +361,7 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
                         scaling="density",
                         mode="psd"
                     )
-                    mask_i = f_i <= settings["fmax"]
+                    mask_i = (f_i >= settings["fmin"]) & (f_i <= settings["fmax"])
                     Sxx_i = Sxx_i[mask_i, :]
                     if Sxx_i.size > 0:
                         Sxx_max_list.append(np.max(Sxx_i))
@@ -410,7 +425,7 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
                     scaling="density",
                     mode="psd"
                 )
-                mask_i = f_i <= settings["fmax"]
+                mask_i = (f_i >= settings["fmin"]) & (f_i <= settings["fmax"])
                 Sxx_i = Sxx_i[mask_i, :]
                 if Sxx_i.size > 0:
                     global_max = np.max(Sxx_i)

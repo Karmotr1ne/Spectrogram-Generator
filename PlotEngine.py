@@ -43,6 +43,7 @@ class PlotEngine(FigureCanvas):
 
     def _plot_spectrogram(self, data, fs, settings, global_max=None):
         nperseg   = settings["nperseg"]
+        fmin      = settings.get("fmin", 0.0)
         fmax      = settings["fmax"]
         log_scale = settings["log_scale"]
 
@@ -53,7 +54,7 @@ class PlotEngine(FigureCanvas):
             scaling="density",
             mode="psd"
         )
-        mask = (f <= fmax)
+        mask = (f >= fmin) & (f <= fmax)
         f    = f[mask]
         Sxx  = Sxx[mask, :]
 
@@ -86,7 +87,7 @@ class PlotEngine(FigureCanvas):
         self.ax_spec.set_title("Spectrogram")
         self.fig.colorbar(pcm, ax=self.ax_spec, orientation='vertical', label="Normalized Power")
         self.ax_spec.set_xlim(0, t[-1])
-        self.ax_spec.set_ylim(0, f[-1])
+        self.ax_spec.set_ylim(fmin, f[-1])
 
         #cache
         self.last_f       = f.copy()
