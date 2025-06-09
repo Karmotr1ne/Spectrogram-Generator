@@ -93,12 +93,7 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         pd_layout = QtWidgets.QHBoxLayout()
         self.btn_plot   = QtWidgets.QPushButton("Plot")
         self.btn_detect = QtWidgets.QPushButton("Detect")
-        lbl_threshold = QtWidgets.QLabel("SD:", self)
-        self.spin_threshold = QtWidgets.QDoubleSpinBox(self)
-        self.spin_threshold.setRange(0.1, 10.0)
-        self.spin_threshold.setSingleStep(0.1)
-        pd_layout.addWidget(lbl_threshold)
-        pd_layout.addWidget(self.spin_threshold)
+
         pd_layout.addWidget(self.btn_plot)
         pd_layout.addWidget(self.btn_detect)
         left_layout.addLayout(pd_layout)
@@ -159,12 +154,6 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         self.chk_combine.setChecked(combine)
         self.chk_combine.toggled.connect(
             lambda v: self.settings.setValue("combineAll", v)
-        )
-
-        saved_thr = self.settings.value("thresholdMult", 3.0, type=float)
-        self.spin_threshold.setValue(saved_thr)
-        self.spin_threshold.valueChanged.connect(
-            lambda v: self.settings.setValue("thresholdMult", v)
         )
 
         mode_raw = self.settings.value("modeRaw", "Signal", type=str)
@@ -460,20 +449,79 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
             self.file_tree.selectAll()
 
     def on_detect_clicked(self):
-        if not hasattr(self.canvas, "last_Sxx_norm"):
-            QtWidgets.QMessageBox.warning(self, "Warning", "Please plot a spectrogram first.")
+        # 1. Get selected items from the tree
+        selected_items = self.file_tree.selectedItems()
+        if not selected_items:
+            QtWidgets.QMessageBox.warning(self, "Warning", "No sweep selected.")
             return
- 
-        threshold_mult = self.spin_threshold.value()
-        event_pairs = self.canvas.detect_power_events(threshold_mult)
+
+        # 2. Get the signal to be analyzed (logic adapted from plot_selected)
+        combine = self.chk_combine.isChecked()
         
-        if not event_pairs:
-            QtWidgets.QMessageBox.information(self, "Detect Result", "No events detected.")
+        # We will use the 'processed' signal for detection if available, otherwise 'raw'.
+        signals_to_process = []
+        fs_list = []
+        for item in selected_items:
+            name = item.data(0, QtCore.Qt.UserRole)
+            try:
+                # Prioritize processed signal for detection
+                signal, fs = self.manager.get_signal(name, processed=True)
+            except KeyError:
+                try:
+                    signal, fs = self.manager.get_signal(name, processed=False)
+                except KeyError:
+                    continue # Skip if no signal data found
+            
+            signals_to_process.append(signal)
+            fs_list.append(fs)
+        
+        if not signals_to_process:
+            QtWidgets.QMessageBox.warning(self, "Warning", "Could not find signal data for selected items.")
             return
 
-        self.canvas.plot_detection_lines(event_pairs)
-        self.status_label.setText(f"Detected {len(event_pairs)} event(s).")
+        if len(set(fs_list)) > 1:
+            QtWidgets.QMessageBox.critical(self, "Error", "Selected sweeps have different sampling rates.")
+            return
+        fs = fs_list[0]
 
+        if combine:
+            final_signal = np.concatenate(signals_to_process)
+        else:
+            # If not combining, use the first selected signal
+            final_signal = signals_to_process[0]
+            
+        # 3. Get HMM analysis settings from the UI
+        # Note: The 'SD Threshold' is no longer used by this method.
+        # The crucial parameters are nperseg, fmin, and fmax.
+        settings = {
+            "nperseg": self.spin_nperseg.value(),
+            "fmin": self.spin_fmin.value(),
+            "fmax": self.spin_fmax.value(),
+        }
+
+        self.status_label.setText("Status: Running HMM detection... Please wait.")
+        QtWidgets.QApplication.processEvents() # Force UI update
+
+        try:
+            # 4. Call the new HMM detection method
+            event_pairs = self.canvas.detect_bursts_hmm(final_signal, fs, settings)
+            
+            # 5. Plot the base signal and spectrogram first
+            self.plot_selected()
+            
+            if not event_pairs:
+                QtWidgets.QMessageBox.information(self, "Detection Result", "No events detected by HMM.")
+                self.status_label.setText("Status: HMM detected 0 events.")
+                return
+
+            # 6. Plot the detection lines on top
+            self.canvas.plot_detection_lines(event_pairs)
+            self.status_label.setText(f"Status: HMM detected {len(event_pairs)} event(s).")
+
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "HMM Error", f"An error occurred during HMM detection:\n{e}")
+            self.status_label.setText("Status: HMM detection failed.")
+            
     def export_pdf(self):
         """
         Placeholder: implement PDF export here, using current canvas.figure.savefig(...)

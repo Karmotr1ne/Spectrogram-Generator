@@ -1,10 +1,9 @@
-# PlotEngine.py
-
 import numpy as np
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.colors import LinearSegmentedColormap
 from scipy.signal import spectrogram
+from hmmlearn import hmm
 
 
 class PlotEngine(FigureCanvas):
@@ -80,7 +79,8 @@ class PlotEngine(FigureCanvas):
             t, f, Sxx_norm,
             shading='auto',
             cmap='jet',
-            vmin=0.0, vmax=1.0
+            vmin=0.0, vmax=1.0,
+            zorder=0
         )
         self.ax_spec.set_ylabel("Frequency (Hz)")
         self.ax_spec.set_xlabel("Time (s)")
@@ -140,48 +140,88 @@ class PlotEngine(FigureCanvas):
         }
         return LinearSegmentedColormap('CustomMap', cdict)
    
-    def detect_power_events(self, threshold_mult):
-         if not hasattr(self, "last_Sxx_norm"):
-             return []
+    def detect_bursts_hmm(self, signal, fs, settings):
 
-         S = self.last_Sxx_norm
+        if signal is None or len(signal) == 0:
+            return []
 
-         if S.size == 0:
-             return []
-         pwr_seq = np.sum(S, axis=0)
+        # Step 1: Calculate Spectrogram
+        f, t, Sxx = spectrogram(
+            signal, fs=fs, nperseg=settings['nperseg'], scaling="density", mode="psd"
+        )
+        if Sxx.size == 0 or t.size < 2:
+            return []
 
-         diff_seq = np.diff(pwr_seq)
+        # Step 2: Engineer Features for the HMM
+        # Feature 1: Log power in the specified frequency band
+        freq_mask = (f >= settings['fmin']) & (f <= settings['fmax'])
+        power_feature = np.sum(Sxx[freq_mask, :], axis=0)
+        log_power = np.log10(power_feature + 1e-20)
 
-         sigma = np.std(diff_seq)
+        # Feature 2: Delta of log power (change in power)
+        delta_log_power = np.diff(log_power, prepend=log_power[0])
 
-         thr_pos = threshold_mult * sigma
-         thr_neg = -threshold_mult * sigma
- 
-         idx_rise = np.where(diff_seq > thr_pos)[0]
-         idx_fall = np.where(diff_seq < thr_neg)[0]
- 
-         t_rise_all = self.last_t[idx_rise + 1]
-         t_fall_all = self.last_t[idx_fall + 1]
+        # Combine features into a single array for the HMM
+        # Shape: (n_timesteps, n_features)
+        feature_matrix = np.column_stack([log_power, delta_log_power])
 
-         events = []
-         j_start = 0
-         for tr in t_rise_all:
-             while j_start < len(t_fall_all) and t_fall_all[j_start] <= tr:
-                 j_start +=  1
-             if j_start < len(t_fall_all):
-                 tf = t_fall_all[j_start]
-                 events.append((tr, tf))
-                 j_start +=  1
-             else:
-                 break
- 
-         return events
+        # Step 3: Train a 4-state Gaussian HMM
+        model = hmm.GaussianHMM(n_components=4, covariance_type="diag", n_iter=100)
+        model.fit(feature_matrix)
+
+        # Step 4: Identify the meaning of the 4 hidden states
+        # The HMM assigns states randomly (0, 1, 2, 3). We need to map them to our
+        # conceptual states (Baseline, Rising, Plateau, Falling) based on their learned means.
+        # model.means_ is a (n_components, n_features) array.
+        state_means = model.means_
+        
+        # Identify Baseline state: has the lowest mean log_power (feature 0)
+        baseline_state = np.argmin(state_means[:, 0])
+        
+        # Identify Rising state: has the highest mean delta_log_power (feature 1)
+        rising_state = np.argmax(state_means[:, 1])
+
+        # Identify Falling state: has the lowest mean delta_log_power (feature 1)
+        falling_state = np.argmin(state_means[:, 1])
+
+        # Identify Plateau state: The remaining state. It should have high power but low delta.
+        plateau_state = list(set(range(4)) - {baseline_state, rising_state, falling_state})[0]
+
+        # Step 5: Decode the most likely state sequence
+        hidden_states = model.predict(feature_matrix)
+
+        # Step 6: Convert the state sequence to event timestamps
+        events = []
+        in_event = False
+        start_time = 0.0
+
+        for i in range(1, len(hidden_states)):
+            prev_state = hidden_states[i-1]
+            curr_state = hidden_states[i]
+
+            # An event starts when we transition from Baseline to the Rising phase
+            if not in_event and prev_state == baseline_state and curr_state == rising_state:
+                in_event = True
+                start_time = t[i]
+            
+            # An event ends when we transition back to the Baseline from any other state
+            elif in_event and curr_state == baseline_state:
+                in_event = False
+                end_time = t[i]
+                # Optional: filter out very short, noisy events
+                if end_time - start_time > 0.01: # min duration of 10ms
+                    events.append((start_time, end_time))
+
+        # Handle the case where the signal ends while still in an event
+        if in_event:
+            end_time = t[-1]
+            if end_time - start_time > 0.01:
+                events.append((start_time, end_time))
+
+        return events
 
     def plot_detection_lines(self, event_pairs):
         for tr, tf in event_pairs:
-            self.ax_signal.axvline(tr, color='blue', linestyle='--', linewidth=1)
-            self.ax_signal.axvline(tf, color='blue', linestyle='--', linewidth=1)
-
-            self.ax_spec.axvline(tr, color='blue', linestyle='--', linewidth=1)
-            self.ax_spec.axvline(tf, color='blue', linestyle='--', linewidth=1)
+            self.ax_signal.axvspan(tr, tf, color='blue', alpha=0.5, zorder=0)
+            self.ax_spec.axvspan(tr, tf, color='blue', alpha=0.5, zorder=1)
         self.draw()
