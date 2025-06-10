@@ -143,10 +143,10 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         # --- Right panel: Embedded PlotEngine ---
         right_panel = QtWidgets.QWidget()
         right_layout = QVBoxLayout(right_panel)
-        
         self.canvas = PlotEngine(parent=self)
         right_layout.addWidget(self.canvas, stretch=1)
         self.status_label = QtWidgets.QLabel("Status: Ready")
+        # The status label has a default stretch of 0, so it will only take its minimum height.
         right_layout.addWidget(self.status_label)
 
         splitter.addWidget(left_panel)
