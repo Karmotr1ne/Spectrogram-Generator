@@ -1,227 +1,419 @@
 import numpy as np
+import warnings
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.colors import LinearSegmentedColormap
 from scipy.signal import spectrogram
 from hmmlearn import hmm
 
-
 class PlotEngine(FigureCanvas):
 
     def __init__(self, *args, **kwargs):
-        # Create a Figure with two subplots: one for time‐domain, one for spectrogram
-        self.fig = Figure(figsize=(8, 5),constrained_layout=True)
-
-        gs = self.fig.add_gridspec(nrows=2, ncols=1, height_ratios=[1, 1], hspace=0.0)
-
-        self.ax_signal = self.fig.add_subplot(gs[0, 0])
-        self.ax_spec   = self.fig.add_subplot(gs[1, 0], sharex=self.ax_signal)
-
+        self.fig = Figure(constrained_layout=True)
         super().__init__(self.fig)
+        self.ax_signal = None
+        self.ax_spec = None
+        self._create_axes()
 
-    def clear(self):
-        """
-        Clear both subplots.
-        """
-        self.fig.clf()
-        gs = self.fig.add_gridspec(nrows=2, ncols=1, height_ratios=[1, 1], hspace=0.0)
+        self.model = hmm.GaussianHMM(n_components=4, covariance_type="diag", n_iter=100, random_state=42)
+        self.is_model_refined = False
+        self.spec_data_source = None
+        self.last_fs = None
+        self.last_settings = None
+        self.last_t = np.array([])
+
+        self.editing_enabled = False
+        self.burst_patches = []
+        
+        # Colors for ROI states
+        self.ROI_COLOR = 'blue'
+        self.HOVER_COLOR = 'red'
+        
+        # State variables for the new logic
+        self.hovered_patch = None  # Stores the patch currently under the mouse
+        self.is_adding = False     # True when drawing a new patch
+        self.adding_patch = None   # The visual patch being drawn
+        self.press_x = None        # Stores x-coord on left-click press
+        
+        self.press_cid = self.release_cid = self.motion_cid = None
+    
+    def _create_axes(self):
+        gs = self.fig.add_gridspec(nrows=2, ncols=1, height_ratios=[1, 1]) # 不再有 hspace=0.0
         self.ax_signal = self.fig.add_subplot(gs[0, 0])
-        self.ax_spec   = self.fig.add_subplot(gs[1, 0], sharex=self.ax_signal)
-
-    def plot_processed_signal(self, signal, fs, label="Processed"):
-        # In case signal is None or empty, do nothing
-        if signal is None or fs is None or len(signal) == 0:
-            return
-
-        t = np.arange(len(signal)) / fs
-        self.ax_signal.plot(t, signal, label=label, color='black')
-        self.ax_signal.set_ylabel("Amplitude")
-        self.ax_signal.legend()
-        self.ax_signal.set_title("Time‐domain Signal")
-        # Do NOT call self.draw() here; let GUI caller invoke draw() after all plotting steps.
-
-    def _plot_spectrogram(self, data, fs, settings, global_max=None):
-        nperseg   = settings["nperseg"]
-        fmin      = settings.get("fmin", 0.0)
-        fmax      = settings["fmax"]
-        log_scale = settings["log_scale"]
-
-        f, t, Sxx = spectrogram(
-            data,
-            fs=fs,
-            nperseg=nperseg,
-            scaling="density",
-            mode="psd"
-        )
-        mask = (f >= fmin) & (f <= fmax)
-        f    = f[mask]
-        Sxx  = Sxx[mask, :]
-
-        if global_max is None or global_max <= 0:
-            base = np.max(Sxx) if Sxx.size > 0 else 1.0
-        else:
-            base = global_max
-        Sxx_norm = Sxx / (base + 1e-20)
-        Sxx_norm = np.clip(Sxx_norm, 0.0, 1.0)
-
-        if log_scale:
-            eps = 1e-12
-            Sxx_db = 10.0 * np.log10(Sxx_norm + eps)
-            Sxx_db = np.nan_to_num(Sxx_db)
-            min_db = np.min(Sxx_db)
-            max_db = np.max(Sxx_db)
-            if max_db - min_db < 1e-6:
-                Sxx_norm = np.zeros_like(Sxx_db)
-            else:
-                Sxx_norm = (Sxx_db - min_db) / (max_db - min_db)
-
-        pcm = self.ax_spec.pcolormesh(
-            t, f, Sxx_norm,
-            shading='auto',
-            cmap='jet',
-            vmin=0.0, vmax=1.0,
-            zorder=0
-        )
-        self.ax_spec.set_ylabel("Frequency (Hz)")
-        self.ax_spec.set_xlabel("Time (s)")
-        self.ax_spec.set_title("Spectrogram")
-        self.fig.colorbar(pcm, ax=self.ax_spec, orientation='vertical', label="Normalized Power")
-        self.ax_spec.set_xlim(0, t[-1])
-        self.ax_spec.set_ylim(fmin, f[-1])
-
-        #cache
-        self.last_f       = f.copy()
-        self.last_t       = t.copy()
-        self.last_Sxx_norm = Sxx_norm.copy()       
+        self.ax_spec = self.fig.add_subplot(gs[1, 0], sharex=self.ax_signal)
+        
+    def clear(self):
+        self.burst_patches.clear()
+        self.fig.clf()
+        self._create_axes()
 
     def plot_extra(self, signal_raw, signal_proc, fs, settings, global_max=None):
-        self.clear()
+        if self.ax_signal is None: self._create_axes()
+        
+        if settings.get("draw_raw") and signal_raw is not None:
+            self.ax_signal.plot(np.arange(len(signal_raw))/fs, signal_raw, color='gray', label='Raw')
+        if settings.get("draw_proc") and signal_proc is not None:
+            self.ax_signal.plot(np.arange(len(signal_proc))/fs, signal_proc, color='black', label='Processed')
+        if self.ax_signal.has_data():
+            self.ax_signal.set_ylabel("Amplitude"); self.ax_signal.legend(loc="upper right")
 
-        do_sig_raw  = settings["draw_raw"]  and settings["mode_raw"]  in ["Signal", "Both"]
-        do_sig_proc = settings["draw_proc"] and settings["mode_proc"] in ["Signal", "Both"]
+        source_candidate = None
+        if settings["mode_proc"] in ["Spectrogram", "Both"] and signal_proc is not None:
+            source_candidate = signal_proc
+        elif settings["mode_raw"] in ["Spectrogram", "Both"] and signal_raw is not None:
+            source_candidate = signal_raw
 
-        if do_sig_raw and signal_raw is not None:
-            t_raw = np.arange(len(signal_raw)) / fs
-            self.ax_signal.plot(t_raw, signal_raw, color='gray', label='Raw')
-        if do_sig_proc and signal_proc is not None:
-            t_proc = np.arange(len(signal_proc)) / fs
-            self.ax_signal.plot(t_proc, signal_proc, color='black', label='Processed')
+        if source_candidate is not None:
+            self.spec_data_source = source_candidate
+            self.last_fs = fs
+            self.last_settings = settings
+            self._plot_spectrogram(self.spec_data_source, fs, settings, global_max)
 
-        if do_sig_raw or do_sig_proc:
-            self.ax_signal.set_ylabel("Amplitude")
-            self.ax_signal.legend(loc="upper right")
+        self.fig.canvas.draw()
+        self.fig.canvas.draw()
 
-        do_spec_raw  = settings["draw_raw"]  and settings["mode_raw"]  in ["Spectrogram", "Both"]
-        do_spec_proc = settings["draw_proc"] and settings["mode_proc"] in ["Spectrogram", "Both"]
+    def _plot_spectrogram(self, data, fs, settings, global_max=None):
+        # This method remains largely the same, but sets self.last_t
+        nperseg, fmin, fmax, log_scale = settings["nperseg"], settings["fmin"], settings["fmax"], settings["log_scale"]
+        f, t, Sxx = spectrogram(data, fs=fs, nperseg=nperseg, scaling="density", mode="psd")
+        mask = (f >= fmin) & (f <= fmax)
+        f, Sxx = f[mask], Sxx[mask, :]
+        if Sxx.size == 0: self.last_t = np.array([]); return
+        
+        base = np.max(Sxx) if global_max is None or global_max <= 0 else global_max
+        Sxx_norm = np.clip(Sxx / (base + 1e-20), 0.0, 1.0)
+        if log_scale:
+            eps = 1e-12; Sxx_db = 10.0 * np.log10(Sxx_norm + eps); Sxx_db = np.nan_to_num(Sxx_db)
+            min_db, max_db = np.min(Sxx_db), np.max(Sxx_db)
+            Sxx_norm = (Sxx_db - min_db) / (max_db - min_db) if (max_db - min_db) > 1e-6 else np.zeros_like(Sxx_db)
+            
+        pcm = self.ax_spec.pcolormesh(t, f, Sxx_norm, shading='auto', cmap='jet', vmin=0.0, vmax=1.0, zorder=0)
+        self.ax_spec.set_ylabel("Frequency (Hz)"); self.ax_spec.set_xlabel("Time (s)")
+        self.fig.colorbar(pcm, ax=self.ax_spec, orientation='vertical', label="Normalized Power")
+        self.ax_spec.set_xlim(0, t[-1]); self.ax_spec.set_ylim(fmin, f[-1])
+        self.last_t = t.copy()
 
-        data_for_spec = None
-        if do_spec_proc and signal_proc is not None:
-            data_for_spec = signal_proc
-        elif do_spec_raw and signal_raw is not None:
-            data_for_spec = signal_raw
+    def _calculate_features(self, signal, fs, settings):
+        f, t, Sxx = spectrogram(signal, fs=fs, nperseg=settings['nperseg'], scaling="density", mode="psd")
+        Sxx = np.asarray(Sxx)
+        f = np.asarray(f)
 
-        if data_for_spec is not None:
-            self._plot_spectrogram(data_for_spec, fs, settings, global_max)
-
-    def _get_custom_colormap(self):
-        cdict = {
-            'red':   [(0.00, 0.00, 0.00),
-                      (0.20, 1.00, 1.00),
-                      (0.80, 0.00, 0.00),
-                      (1.00, 1.00, 1.00)],
-            'green': [(0.00, 0.00, 0.00),
-                      (0.20, 1.00, 1.00),
-                      (0.80, 1.00, 1.00),
-                      (1.00, 0.00, 0.00)],
-            'blue':  [(0.00, 0.00, 0.00),
-                      (0.20, 0.00, 0.00),
-                      (0.80, 0.00, 0.00),
-                      (1.00, 0.00, 0.00)]
-        }
-        return LinearSegmentedColormap('CustomMap', cdict)
-   
-    def detect_bursts_hmm(self, signal, fs, settings):
-
-        if signal is None or len(signal) == 0:
-            return []
-
-        # Step 1: Calculate Spectrogram
-        f, t, Sxx = spectrogram(
-            signal, fs=fs, nperseg=settings['nperseg'], scaling="density", mode="psd"
-        )
-        if Sxx.size == 0 or t.size < 2:
-            return []
-
-        # Step 2: Engineer Features for the HMM
-        # Feature 1: Log power in the specified frequency band
+        if Sxx.size == 0: return None, None
+        
         freq_mask = (f >= settings['fmin']) & (f <= settings['fmax'])
         power_feature = np.sum(Sxx[freq_mask, :], axis=0)
         log_power = np.log10(power_feature + 1e-20)
-
-        # Feature 2: Delta of log power (change in power)
         delta_log_power = np.diff(log_power, prepend=log_power[0])
+        return t, np.column_stack([log_power, delta_log_power])
 
-        # Combine features into a single array for the HMM
-        # Shape: (n_timesteps, n_features)
-        feature_matrix = np.column_stack([log_power, delta_log_power])
-
-        # Step 3: Train a 4-state Gaussian HMM
-        model = hmm.GaussianHMM(n_components=4, covariance_type="diag", n_iter=100)
-        model.fit(feature_matrix)
-
-        # Step 4: Identify the meaning of the 4 hidden states
-        # The HMM assigns states randomly (0, 1, 2, 3). We need to map them to our
-        # conceptual states (Baseline, Rising, Plateau, Falling) based on their learned means.
-        # model.means_ is a (n_components, n_features) array.
-        state_means = model.means_
+    def learn_and_detect(self):
+        if self.spec_data_source is None: raise ValueError("Please plot a spectrogram before learning.")
+        if not self.burst_patches: raise ValueError("No manual regions provided to learn from.")
         
-        # Identify Baseline state: has the lowest mean log_power (feature 0)
-        baseline_state = np.argmin(state_means[:, 0])
+        print("\n--- [DEBUG] Starting learn_and_detect ---")
         
-        # Identify Rising state: has the highest mean delta_log_power (feature 1)
-        rising_state = np.argmax(state_means[:, 1])
+        t, features = self._calculate_features(self.spec_data_source, self.last_fs, self.last_settings)
+        if t is None: 
+            print("[DEBUG] Feature calculation returned None. Aborting.")
+            return []
 
-        # Identify Falling state: has the lowest mean delta_log_power (feature 1)
-        falling_state = np.argmin(state_means[:, 1])
+        print(f"[DEBUG] Total time points in spectrogram: {len(t)}")
+        print(f"[DEBUG] Total features shape: {features.shape}")
 
-        # Identify Plateau state: The remaining state. It should have high power but low delta.
-        plateau_state = list(set(range(4)) - {baseline_state, rising_state, falling_state})[0]
+        precise_bursts_t = []
+        # --- Loop through each manually drawn region (ROI) ---
+        for i, patch_pair in enumerate(self.burst_patches):
+            bbox = patch_pair[0].get_extents()
+            roi_start_t, roi_end_t = min(bbox.x0, bbox.x1), max(bbox.x0, bbox.x1)
 
-        # Step 5: Decode the most likely state sequence
-        hidden_states = model.predict(feature_matrix)
+            print(f"\n[DEBUG] Processing ROI #{i+1}: Time range = {roi_start_t:.4f}s to {roi_end_t:.4f}s")
 
-        # Step 6: Convert the state sequence to event timestamps
-        events = []
-        in_event = False
-        start_time = 0.0
-
-        for i in range(1, len(hidden_states)):
-            prev_state = hidden_states[i-1]
-            curr_state = hidden_states[i]
-
-            # An event starts when we transition from Baseline to the Rising phase
-            if not in_event and prev_state == baseline_state and curr_state == rising_state:
-                in_event = True
-                start_time = t[i]
+            # Find the indices of the feature array that fall within this time range
+            roi_indices = np.where((t >= roi_start_t) & (t <= roi_end_t))[0]
             
-            # An event ends when we transition back to the Baseline from any other state
-            elif in_event and curr_state == baseline_state:
+            print(f"[DEBUG] Number of time points found in this ROI: {len(roi_indices)}")
+
+            if len(roi_indices) < 2: # A single point has zero variance, let's check for this
+                print("[DEBUG] WARNING: ROI contains fewer than 2 data points. Skipping this ROI as it cannot be learned from.")
+                continue
+
+            # This is the actual data subset for the HMM
+            roi_features = features[roi_indices, :]
+            roi_time_subset = t[roi_indices]
+            
+            print(f"[DEBUG] Shape of features for this ROI: {roi_features.shape}")
+            
+            # Let's check the variance directly before sending to HMM
+            # This is the most critical check
+            feature_variances = np.var(roi_features, axis=0)
+            print(f"[DEBUG] Variance of features for this ROI: {feature_variances}")
+
+            if np.any(feature_variances <= 0):
+                print("[DEBUG] ERROR: Found zero or negative variance in features BEFORE HMM.")
+                # You can print the problematic features to inspect them
+                # print("[DEBUG] Features with zero variance:\n", roi_features)
+
+            
+            # Pass the 'warnings' module to the function call
+            precise_times = self._find_burst_in_roi(roi_features, roi_time_subset, warnings)
+            if precise_times: 
+                print(f"[DEBUG] HMM found a burst in this ROI: {precise_times}")
+                precise_bursts_t.append(precise_times)
+        
+        if not precise_bursts_t: 
+            raise ValueError("Could not identify a clear burst in any of the provided regions.")
+            
+        labels = np.zeros(len(t), dtype=int)
+        for start_t, end_t in precise_bursts_t:
+            start_idx, end_idx = np.searchsorted(t, start_t), np.searchsorted(t, end_t)
+            if start_idx >= end_idx: continue
+            labels[start_idx] = 1
+            if end_idx > start_idx + 1: labels[start_idx+1:end_idx] = 2
+            if end_idx < len(labels):
+                labels[end_idx] = 3
+
+        self._train_supervised(features, labels)
+        predicted_states = self.model.predict(features)
+
+        events, in_event = [], False
+        start_time = 0.0
+        for i in range(len(predicted_states)):
+            if not in_event and predicted_states[i] in [1, 2]:
+                in_event, start_time = True, t[i]
+            elif in_event and predicted_states[i] == 0:
                 in_event = False
-                end_time = t[i]
-                # Optional: filter out very short, noisy events
-                if end_time - start_time > 0.01: # min duration of 10ms
-                    events.append((start_time, end_time))
+                if t[i] > start_time: events.append((start_time, t[i]))
+        if in_event: events.append((start_time, t[-1]))
 
-        # Handle the case where the signal ends while still in an event
-        if in_event:
-            end_time = t[-1]
-            if end_time - start_time > 0.01:
-                events.append((start_time, end_time))
-
+        print("--- [DEBUG] Finished learn_and_detect ---")
         return events
+    
+    def _train_supervised(self, features, labels):
+        n_states = self.model.n_components
+        new_means = []
+        new_covars = []
 
-    def plot_detection_lines(self, event_pairs):
+        for i in range(n_states):
+            state_features = features[labels == i]
+            num_samples = state_features.shape[0]
+
+            if num_samples > 1:
+                # Case 1: More than 1 sample. Calculate mean and variance normally.
+                mean = state_features.mean(axis=0)
+                var = state_features.var(axis=0) + 1e-6
+                new_means.append(mean)
+                new_covars.append(var)
+
+            elif num_samples == 1:
+                # Case 2: Exactly 1 sample. Use its value as the mean, and a default small variance.
+                # This is much more representative than a generic [0,0].
+                print(f"[DEBUG] INFO: State {i} has 1 sample. Using its features as the mean.")
+                mean = state_features[0] # Use the single sample's features as the mean
+                var = np.ones(features.shape[1]) * 1e-6 # Variance cannot be calculated, use default
+                new_means.append(mean)
+                new_covars.append(var)
+
+            else: # num_samples == 0
+                # Case 3: No samples. Use a generic default.
+                print(f"[DEBUG] WARNING: State {i} has 0 samples. Using default parameters.")
+                mean = np.zeros(features.shape[1])
+                var = np.ones(features.shape[1]) * 1e-6
+                new_means.append(mean)
+                new_covars.append(var)
+
+        self.model.means_ = np.array(new_means)
+        self.model.covars_ = np.array(new_covars)
+        
+        # 1. Count transitions
+        transmat = np.zeros((n_states, n_states))
+        for i in range(len(labels) - 1): 
+            transmat[labels[i], labels[i+1]] += 1
+        
+        # 2. Normalize rows that have observed transitions
+        sum_of_rows = transmat.sum(axis=1, keepdims=True)
+        # Use 'where' to avoid division by zero warnings for rows that are all zeros.
+        transmat_prob = np.divide(transmat, sum_of_rows, 
+                                  out=np.zeros_like(transmat, dtype=float), 
+                                  where=sum_of_rows != 0)
+        
+        # 3. For states with no outgoing transitions (rows summing to 0),
+        #    set their self-transition probability to 1.0. This ensures the row sums to 1.
+        no_transition_states = np.where(sum_of_rows.flatten() == 0)[0]
+        for state_idx in no_transition_states:
+            transmat_prob[state_idx, state_idx] = 1.0
+            print(f"[DEBUG] State {state_idx} has no outgoing transitions. Setting self-transition probability to 1.")
+
+        self.model.transmat_ = transmat_prob
+
+        self.model.startprob_ = np.array([1.0, 0.0, 0.0, 0.0])
+        self.is_model_refined = True
+    
+    def _find_burst_in_roi(self, roi_features, roi_t, warnings):
+        if len(roi_features) < self.model.n_components: return None
+        
+        temp_hmm = hmm.GaussianHMM(n_components=2, covariance_type="diag", n_iter=50, random_state=42)
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=UserWarning, module='hmmlearn')
+                temp_hmm.fit(roi_features)
+        except ValueError:
+            # This can happen if the data in the ROI is not suitable for the model (e.g., all zeros).
+            return None
+
+        means = np.asarray(temp_hmm.means_)
+        if means.ndim != 2:
+            raise TypeError(f"HMM means has unexpected dimension: {means.ndim}. Expected 2.")
+
+        burst_state = np.argmax(means[:, 0])
+        states = temp_hmm.predict(roi_features)
+        burst_indices = np.where(states == burst_state)[0]
+        if len(burst_indices) == 0: return None
+        return roi_t[burst_indices[0]], roi_t[burst_indices[-1]]
+    
+    def unsupervised_detect(self):
+        if self.spec_data_source is None: raise ValueError("Please plot a spectrogram before detecting.")
+
+        t, features = self._calculate_features(self.spec_data_source, self.last_fs, self.last_settings)
+        if t is None: return []
+
+        if not self.is_model_refined:
+            if len(features) < self.model.n_components:
+                raise ValueError("Not enough data to train the model. Signal may be too short.")
+            self.model.fit(features)
+        
+        hidden_states = self.model.predict(features)
+
+        state_means = np.asarray(self.model.means_)
+        if state_means.ndim != 2:
+            raise TypeError(f"HMM means has unexpected dimension: {state_means.ndim}. Expected 2.")
+
+        baseline_state, rising_state = np.argmin(state_means[:, 0]), np.argmax(state_means[:, 1])
+
+        events, in_event, start_time = [], False, 0.0
+        for i in range(1, len(hidden_states)):
+            if not in_event and hidden_states[i-1] == baseline_state and hidden_states[i] == rising_state:
+                in_event, start_time = True, t[i]
+            elif in_event and hidden_states[i] == baseline_state:
+                in_event = False
+                if t[i] > start_time: events.append((start_time, t[i]))
+        if in_event: events.append((start_time, t[-1]))
+        return events
+    
+    def reset_model(self):
+        """Resets the HMM to its initial, untrained state."""
+        self.model = hmm.GaussianHMM(n_components=4, covariance_type="diag", n_iter=100, random_state=42)
+        self.is_model_refined = False
+
+    def set_editing_enabled(self, enabled):
+        if self.press_cid: self.fig.canvas.mpl_disconnect(self.press_cid)
+        if self.release_cid: self.fig.canvas.mpl_disconnect(self.release_cid)
+        if self.motion_cid: self.fig.canvas.mpl_disconnect(self.motion_cid)
+
+        # Reset all state variables and connection IDs for a clean start.
+        self.press_cid = self.release_cid = self.motion_cid = None
+        self.is_adding = self.adding_patch = self.press_x = self.hovered_patch = None
+
+        # Now, set the new state and connect if enabled.
+        self.editing_enabled = enabled
+        if enabled:
+            # Connect the event handlers fresh.
+            self.press_cid = self.fig.canvas.mpl_connect('button_press_event', self.on_press)
+            self.release_cid = self.fig.canvas.mpl_connect('button_release_event', self.on_release)
+            self.motion_cid = self.fig.canvas.mpl_connect('motion_notify_event', self.on_motion)
+
+    def on_press(self, event):
+        if not self.editing_enabled or event.inaxes not in [self.ax_signal, self.ax_spec] or event.xdata is None:
+            return
+        if event.button == 3:
+            if self.hovered_patch:
+                self.remove_patch(self.hovered_patch)
+                self.hovered_patch = None
+            return
+
+        if event.button == 1:
+            self.is_adding = True
+            self.press_x = event.xdata
+
+    def on_motion(self, event):
+        if not self.editing_enabled or event.inaxes not in [self.ax_signal, self.ax_spec] or event.xdata is None:
+            if self.hovered_patch:
+                self.hovered_patch[0].set_color(self.ROI_COLOR)
+                self.hovered_patch[1].set_color(self.ROI_COLOR)
+                self.hovered_patch = None
+                self.fig.canvas.draw()
+            return
+
+        xdata = event.xdata
+
+        if self.is_adding and self.press_x is not None:
+            if self.adding_patch:
+                self.adding_patch[0].remove()
+                self.adding_patch[1].remove()
+            
+            patch_sig = self.ax_signal.axvspan(self.press_x, xdata, color='green', alpha=0.3, zorder=5)
+            patch_spec = self.ax_spec.axvspan(self.press_x, xdata, color='green', alpha=0.3, zorder=5)
+            self.adding_patch = (patch_sig, patch_spec)
+            self.fig.canvas.draw()
+            return
+
+        found_patch = None
+        for patch_pair in self.burst_patches:
+            bbox = patch_pair[0].get_extents()
+            if min(bbox.x0, bbox.x1) <= xdata <= max(bbox.x0, bbox.x1):
+                found_patch = patch_pair
+                break
+
+        if found_patch and found_patch != self.hovered_patch:
+
+            if self.hovered_patch:
+                self.hovered_patch[0].set_color(self.ROI_COLOR)
+                self.hovered_patch[1].set_color(self.ROI_COLOR)
+            found_patch[0].set_color(self.HOVER_COLOR)
+            found_patch[1].set_color(self.HOVER_COLOR)
+            self.hovered_patch = found_patch
+            self.fig.canvas.draw()
+        elif not found_patch and self.hovered_patch:
+            self.hovered_patch[0].set_color(self.ROI_COLOR)
+            self.hovered_patch[1].set_color(self.ROI_COLOR)
+            self.hovered_patch = None
+            self.fig.canvas.draw()
+
+    def on_release(self, event):
+        if not self.editing_enabled or not self.is_adding or event.xdata is None:
+            if self.adding_patch:
+                self.adding_patch[0].remove(); self.adding_patch[1].remove()
+            self.is_adding = self.adding_patch = self.press_x = None
+            return
+
+        xdata = event.xdata
+
+        if self.adding_patch:
+            self.adding_patch[0].remove()
+            self.adding_patch[1].remove()
+
+        start_x, end_x = self.press_x, xdata
+        min_width = (self.last_t[1] - self.last_t[0]) if len(self.last_t) > 1 else 0.01
+
+        if abs(start_x - end_x) >= min_width:
+            final_sig = self.ax_signal.axvspan(start_x, end_x, color=self.ROI_COLOR, alpha=0.5, zorder=10)
+            final_spec = self.ax_spec.axvspan(start_x, end_x, color=self.ROI_COLOR, alpha=0.5, zorder=10)
+            self.burst_patches.append((final_sig, final_spec))
+
+        self.is_adding = self.adding_patch = self.press_x = None
+        self.fig.canvas.draw()
+
+    def remove_patch(self, patch_pair):  
+        p_sig, p_spec = patch_pair
+        p_sig.remove()
+        p_spec.remove()
+        if patch_pair in self.burst_patches:
+            self.burst_patches.remove(patch_pair)
+        self.fig.canvas.draw()
+
+    def plot_detection_lines(self, event_pairs):  
+        while self.burst_patches: self.remove_patch(self.burst_patches[0])
         for tr, tf in event_pairs:
-            self.ax_signal.axvspan(tr, tf, color='blue', alpha=0.5, zorder=0)
-            self.ax_spec.axvspan(tr, tf, color='blue', alpha=0.5, zorder=1)
-        self.draw()
+            patch_sig = self.ax_signal.axvspan(tr, tf, color=self.ROI_COLOR, alpha=0.5, zorder=10)
+            patch_spec = self.ax_spec.axvspan(tr, tf, color=self.ROI_COLOR, alpha=0.5, zorder=10)
+            self.burst_patches.append((patch_sig, patch_spec))
+        self.fig.canvas.draw()

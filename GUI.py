@@ -4,6 +4,7 @@ from SweepManager import SweepManager
 from PlotEngine import PlotEngine
 from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QGroupBox, QGridLayout, QVBoxLayout, QHBoxLayout, QFrame
 
 
 class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
@@ -13,529 +14,427 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         self.manager = SweepManager()
 
         self.setWindowTitle("Spectrogram Generator")
-        self.resize(1000, 700)
+        self.resize(1200, 750)
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
-        main_layout = QtWidgets.QHBoxLayout(central)
-
-        # Left panel: File tree   UI
+ 
+        # 1. Create a top-level horizontal layout for the main window
+        main_layout = QHBoxLayout(central)
+        
+        # 2. Create a splitter that will manage the left and right panels
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        main_layout.addWidget(splitter)
         left_panel = QtWidgets.QWidget()
-        left_layout = QtWidgets.QVBoxLayout(left_panel)
-        main_layout.addWidget(left_panel, stretch=1)
+        left_layout = QVBoxLayout(left_panel)
 
-        left_layout.addWidget(QtWidgets.QLabel("Loaded Sweeps:"))
+        # Group 1: File List
+        file_group = QGroupBox("Loaded Sweeps")
+        file_layout = QVBoxLayout(file_group)
+        
         self.file_tree = QtWidgets.QTreeWidget()
         self.file_tree.setHeaderHidden(True)
         self.file_tree.setIndentation(0)
-
         self.file_tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.file_tree.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.file_tree.customContextMenuRequested.connect(self.open_context_menu)
+        file_layout.addWidget(self.file_tree)
 
-        left_layout.addWidget(self.file_tree)
+        file_btn_layout = QHBoxLayout()
+        self.btn_add = QtWidgets.QPushButton("Add Files")
+        self.btn_remove = QtWidgets.QPushButton("Remove Selected")
+        file_btn_layout.addWidget(self.btn_add)
+        file_btn_layout.addWidget(self.btn_remove)
+        file_layout.addLayout(file_btn_layout)
+        left_layout.addWidget(file_group)
 
-        # Add / Remove buttons
-        btn_layout = QtWidgets.QHBoxLayout()
-        self.btn_add = QtWidgets.QPushButton("Add")
-        self.btn_remove = QtWidgets.QPushButton("Remove")
-        btn_layout.addWidget(self.btn_add)
-        btn_layout.addWidget(self.btn_remove)
-        left_layout.addLayout(btn_layout)
+        # Group 2: Display Options
+        display_group = QGroupBox("Display Options")
+        display_v_layout = QVBoxLayout(display_group) 
 
-        # Display checkboxes and mode selectors
-        display_layout = QtWidgets.QHBoxLayout()
+        raw_proc_layout = QHBoxLayout()
         self.chk_original = QtWidgets.QCheckBox("RAW")
         self.combo_display_org = QtWidgets.QComboBox()
         self.combo_display_org.addItems(["Signal", "Spectrogram", "Both"])
         self.chk_processed = QtWidgets.QCheckBox("PROC")
         self.combo_display_proc = QtWidgets.QComboBox()
         self.combo_display_proc.addItems(["Signal", "Spectrogram", "Both"])
-        display_layout.addWidget(self.chk_original)
-        display_layout.addWidget(self.combo_display_org)
-        display_layout.addWidget(self.chk_processed)
-        display_layout.addWidget(self.combo_display_proc)
-        left_layout.addLayout(display_layout)
+        raw_proc_layout.addWidget(self.chk_original)
+        raw_proc_layout.addWidget(self.combo_display_org)
+        raw_proc_layout.addStretch()
+        raw_proc_layout.addWidget(self.chk_processed)
+        raw_proc_layout.addWidget(self.combo_display_proc)
+        display_v_layout.addLayout(raw_proc_layout)
 
-        # FFT & log options
-        fft_layout = QtWidgets.QHBoxLayout()
+        other_display_layout = QHBoxLayout()
         self.chk_combine = QtWidgets.QCheckBox("Combine all sweeps")
-        self.chk_combine.setChecked(False)
         self.chk_log = QtWidgets.QCheckBox("Log Scale")
-        fft_layout.addWidget(self.chk_combine)
-        fft_layout.addStretch(1)
-        fft_layout.addWidget(self.chk_log)
-        left_layout.addLayout(fft_layout)
+        other_display_layout.addWidget(self.chk_combine)
+        other_display_layout.addStretch()
+        other_display_layout.addWidget(self.chk_log)
+        display_v_layout.addLayout(other_display_layout)
+        left_layout.addWidget(display_group)
 
-        param_layout = QtWidgets.QHBoxLayout()
-        param_layout.addWidget(QtWidgets.QLabel("FFT window:"))
+        # Group 3: Analysis Parameters
+        params_group = QGroupBox("Analysis Parameters")
+        params_layout = QGridLayout(params_group)
+        params_layout.addWidget(QtWidgets.QLabel("FFT window:"), 0, 0)
         self.spin_nperseg = QtWidgets.QSpinBox()
         self.spin_nperseg.setRange(32, 8192)
         self.spin_nperseg.setSingleStep(32)
-        self.spin_nperseg.setValue(1024)
-        param_layout.addWidget(self.spin_nperseg)
-        left_layout.addLayout(param_layout)
-
-        param_layout = QtWidgets.QHBoxLayout()
-        param_layout.addWidget(QtWidgets.QLabel("Min Freq:"))
+        params_layout.addWidget(self.spin_nperseg, 0, 1)
+        
+        params_layout.addWidget(QtWidgets.QLabel("Min Freq:"), 1, 0)
         self.spin_fmin = QtWidgets.QDoubleSpinBox()
         self.spin_fmin.setRange(0, 5000)
-        self.spin_fmin.setValue(0.0)
-        param_layout.addWidget(self.spin_fmin)
-        param_layout.addStretch(1)
-        param_layout.addWidget(QtWidgets.QLabel("Max Freq:"))
+        params_layout.addWidget(self.spin_fmin, 1, 1)
+        
+        params_layout.addWidget(QtWidgets.QLabel("Max Freq:"), 2, 0)
         self.spin_fmax = QtWidgets.QDoubleSpinBox()
         self.spin_fmax.setRange(1, 5000)
-        self.spin_fmax.setValue(30.0)
-        param_layout.addWidget(self.spin_fmax)
-        left_layout.addLayout(param_layout)
+        params_layout.addWidget(self.spin_fmax, 2, 1)
+        left_layout.addWidget(params_group)
 
-        # Plot / Export buttons
-        pd_layout = QtWidgets.QHBoxLayout()
-        self.btn_plot   = QtWidgets.QPushButton("Plot")
-        self.btn_detect = QtWidgets.QPushButton("Detect")
+        # Group 4: Automatic Detection (Unsupervised)
+        auto_detect_group = QGroupBox("Automatic Detection (Unsupervised)")
+        auto_detect_layout = QVBoxLayout(auto_detect_group)
+        self.btn_plot = QtWidgets.QPushButton("Plot Signal")
+        self.btn_plot.setToolTip("Plot the selected signal(s) based on the display options.")
+        auto_detect_layout.addWidget(self.btn_plot)
 
-        pd_layout.addWidget(self.btn_plot)
-        pd_layout.addWidget(self.btn_detect)
-        left_layout.addLayout(pd_layout)
+        self.btn_detect = QtWidgets.QPushButton("Auto-Detect Bursts")
+        self.btn_detect.setToolTip("Run unsupervised HMM detection on the signal.")
+        auto_detect_layout.addWidget(self.btn_detect)
+        left_layout.addWidget(auto_detect_group)
 
-        export_layout = QtWidgets.QHBoxLayout()
-        self.btn_export_pdf = QtWidgets.QPushButton("PDF")
-        self.btn_export_csv = QtWidgets.QPushButton("CSV")
+        # Group 5: Manual Correction & Training (Semi-Supervised)
+        semi_supervised_group = QGroupBox("Manual Correction & Training (Semi-Supervised)")
+        semi_supervised_layout = QVBoxLayout(semi_supervised_group)
+
+        self.chk_enable_editing = QtWidgets.QCheckBox("Enable Manual Editing")
+        self.chk_enable_editing.setToolTip("Enable manual adding, moving, and deleting of burst regions.\nThis is the first step for refining the model.")
+        semi_supervised_layout.addWidget(self.chk_enable_editing)
+
+        self.btn_refine_model = QtWidgets.QPushButton("Refine Model from Edits")
+        self.btn_refine_model.setToolTip("After manually correcting detections, use them to train and refine the HMM model.")
+        self.btn_refine_model.setEnabled(False) 
+        semi_supervised_layout.addWidget(self.btn_refine_model)
+
+        self.btn_learn_and_detect = QtWidgets.QPushButton("Learn from Examples")
+        self.btn_learn_and_detect.setToolTip("After manually drawing a few 'perfect' examples, train a model and find all similar bursts.")
+        self.btn_learn_and_detect.setEnabled(False) 
+        semi_supervised_layout.addWidget(self.btn_learn_and_detect)
+        
+        self.btn_reset_model = QtWidgets.QPushButton("Reset Model")
+        self.btn_reset_model.setToolTip("Reset the HMM model to its initial, untrained state.")
+        self.btn_reset_model.clicked.connect(self.on_reset_model_clicked)
+        semi_supervised_layout.addWidget(self.btn_reset_model)
+        left_layout.addWidget(semi_supervised_group)
+
+        # Group 6: Export
+        export_group = QGroupBox("Export")
+        export_layout = QHBoxLayout(export_group)
+        self.btn_export_pdf = QtWidgets.QPushButton("Export PDF")
+        self.btn_export_csv = QtWidgets.QPushButton("Export CSV")
         export_layout.addWidget(self.btn_export_pdf)
         export_layout.addWidget(self.btn_export_csv)
-        left_layout.addLayout(export_layout)
+        left_layout.addWidget(export_group)
 
         left_layout.addStretch()
 
-        # Right panel: Embedded PlotEngine
+        # --- Right panel: Embedded PlotEngine ---
         right_panel = QtWidgets.QWidget()
-        right_layout = QtWidgets.QVBoxLayout(right_panel)
-        main_layout.addWidget(right_panel, stretch=3)
-
-        # Instantiate PlotEngine (matplotlib FigureCanvas) and add to layout
+        right_layout = QVBoxLayout(right_panel)
+        
         self.canvas = PlotEngine(parent=self)
-        right_layout.addWidget(self.canvas)
-
-        # Status bar (optional)
+        right_layout.addWidget(self.canvas, stretch=1)
         self.status_label = QtWidgets.QLabel("Status: Ready")
         right_layout.addWidget(self.status_label)
 
-        # Connect signals
+        splitter.addWidget(left_panel)
+        splitter.addWidget(right_panel)
+        splitter.setSizes([350, 850]) 
+        splitter.setStretchFactor(1, 1)
+        self.connect_signals()
+        self.load_settings()
+
+    def connect_signals(self):
         self.btn_add.clicked.connect(self.add_files)
         self.btn_remove.clicked.connect(self.remove_selected)
+        self.file_tree.customContextMenuRequested.connect(self.open_context_menu)
+        self.file_tree.itemClicked.connect(self.on_tree_item_clicked)
+        
         self.btn_plot.clicked.connect(self.plot_selected)
         self.btn_detect.clicked.connect(self.on_detect_clicked)
+        self.chk_enable_editing.toggled.connect(self.on_editing_mode_changed)
+
+        self.btn_refine_model.clicked.connect(self.on_refine_model_clicked)
+        self.btn_learn_and_detect.clicked.connect(self.on_learn_and_detect_clicked)
+
         self.btn_export_pdf.clicked.connect(self.export_pdf)
         self.btn_export_csv.clicked.connect(self.export_csv)
 
-        # Tree item
-        self.file_tree.itemClicked.connect(self.on_tree_item_clicked)
-
-        #save parameter and path
+    def load_settings(self):
         self.settings = QtCore.QSettings("MyCompany", "SpectrogramGenerator")
         
-        last_dir = self.settings.value("lastDir", "", type=str)
-        self.lastDir = last_dir 
+        self.lastDir = self.settings.value("lastDir", "", type=str)
 
-        draw_raw = self.settings.value("drawRaw", True, type=bool)
-        self.chk_original.setChecked(draw_raw)
+        self.chk_original.setChecked(self.settings.value("drawRaw", True, type=bool))
+        self.chk_original.toggled.connect(lambda v: self.settings.setValue("drawRaw", v))
 
-        self.chk_original.toggled.connect(
-            lambda v: self.settings.setValue("drawRaw", v)
-        )
+        self.chk_processed.setChecked(self.settings.value("drawProc", True, type=bool))
+        self.chk_processed.toggled.connect(lambda v: self.settings.setValue("drawProc", v))
 
-        draw_proc = self.settings.value("drawProc", True, type=bool)
-        self.chk_processed.setChecked(draw_proc)
-        self.chk_processed.toggled.connect(
-            lambda v: self.settings.setValue("drawProc", v)
-        )
-
-        combine = self.settings.value("combineAll", False, type=bool)
-        self.chk_combine.setChecked(combine)
-        self.chk_combine.toggled.connect(
-            lambda v: self.settings.setValue("combineAll", v)
-        )
+        self.chk_combine.setChecked(self.settings.value("combineAll", False, type=bool))
+        self.chk_combine.toggled.connect(lambda v: self.settings.setValue("combineAll", v))
 
         mode_raw = self.settings.value("modeRaw", "Signal", type=str)
         idx_raw = self.combo_display_org.findText(mode_raw)
-        if idx_raw >= 0:
-            self.combo_display_org.setCurrentIndex(idx_raw)
-        self.combo_display_org.currentTextChanged.connect(
-            lambda txt: self.settings.setValue("modeRaw", txt)
-        )
+        if idx_raw >= 0: self.combo_display_org.setCurrentIndex(idx_raw)
+        self.combo_display_org.currentTextChanged.connect(lambda txt: self.settings.setValue("modeRaw", txt))
 
         mode_proc = self.settings.value("modeProc", "Signal", type=str)
         idx_proc = self.combo_display_proc.findText(mode_proc)
-        if idx_proc >= 0:
-            self.combo_display_proc.setCurrentIndex(idx_proc)
-        self.combo_display_proc.currentTextChanged.connect(
-            lambda txt: self.settings.setValue("modeProc", txt)
-        )
+        if idx_proc >= 0: self.combo_display_proc.setCurrentIndex(idx_proc)
+        self.combo_display_proc.currentTextChanged.connect(lambda txt: self.settings.setValue("modeProc", txt))
 
-        nperseg_val = self.settings.value("nperseg", 2048, type=int)
-        self.spin_nperseg.setValue(nperseg_val)
-        self.spin_nperseg.valueChanged.connect(
-            lambda v: self.settings.setValue("nperseg", v)
-        )
+        self.spin_nperseg.setValue(self.settings.value("nperseg", 1024, type=int))
+        self.spin_nperseg.valueChanged.connect(lambda v: self.settings.setValue("nperseg", v))
 
-        fmin_val = self.settings.value("fmin", 0.0, type=float)
-        self.spin_fmin.setValue(fmin_val)
-        self.spin_fmin.valueChanged.connect(
-            lambda v: self.settings.setValue("fmin", v)
-        )
+        self.spin_fmin.setValue(self.settings.value("fmin", 0.0, type=float))
+        self.spin_fmin.valueChanged.connect(lambda v: self.settings.setValue("fmin", v))
 
-        fmax_val = self.settings.value("fmax", 30.0, type=float)
-        self.spin_fmax.setValue(fmax_val)
-        self.spin_fmax.valueChanged.connect(
-            lambda v: self.settings.setValue("fmax", v)
-        )
+        self.spin_fmax.setValue(self.settings.value("fmax", 30.0, type=float))
+        self.spin_fmax.valueChanged.connect(lambda v: self.settings.setValue("fmax", v))
 
-        log_scale = self.settings.value("logScale", False, type=bool)
-        self.chk_log.setChecked(log_scale)
-        self.chk_log.toggled.connect(
-        lambda v: self.settings.setValue("logScale", v)
-        ) 
+        self.chk_log.setChecked(self.settings.value("logScale", False, type=bool))
+        self.chk_log.toggled.connect(lambda v: self.settings.setValue("logScale", v))
+
+    
+    def on_refine_model_clicked(self):
+        if not self.canvas.burst_patches:
+            QtWidgets.QMessageBox.warning(self, "Action Required",
+                                            "There are no burst regions on the plot to learn from. "
+                                            "Please perform an auto-detection and/or manually add regions first.")
+            return
+        self.on_learn_and_detect_clicked()
+
+    def on_learn_and_detect_clicked(self):
+        """Handles the semi-supervised 'Learn from Examples' workflow."""
+        if self.canvas.spec_data_source is None:
+            QtWidgets.QMessageBox.warning(self, "Action Required", "Please plot a signal before learning from it.")
+            return
+        
+        if not self.canvas.burst_patches:
+            QtWidgets.QMessageBox.warning(self, "Action Required", "Please enable manual editing and draw at least one example region to learn from.")
+            return
+
+        self.status_label.setText("Status: Learning from examples and detecting... Please wait.")
+        QtWidgets.QApplication.processEvents()
+
+        try:
+            event_pairs = self.canvas.learn_and_detect()
+            self.plot_selected() 
+            
+            if not event_pairs:
+                QtWidgets.QMessageBox.information(self, "Detection Result", "Could not detect any bursts after learning.")
+                self.status_label.setText("Status: Learning complete. No bursts found.")
+                return
+
+            self.canvas.plot_detection_lines(event_pairs)
+            self.status_label.setText(f"Status: Learned from examples and detected {len(event_pairs)} event(s).")
+
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Learning Error", f"An error occurred during learning:\n{e}")
+            self.status_label.setText("Status: Learning or detection failed.")
+
+    def on_reset_model_clicked(self):
+        self.canvas.reset_model()
+        QtWidgets.QMessageBox.information(self, "Model Status", "The HMM model has been reset to its default state.")
+        self.status_label.setText("Status: HMM model has been reset.")
+
+    def on_editing_mode_changed(self, is_checked):
+        self.canvas.set_editing_enabled(is_checked)
+        if is_checked:
+            self.status_label.setText("Status: Manual editing enabled. Left-click drag to add/move, right-click to remove.")
+            self.btn_refine_model.setEnabled(True)
+            self.btn_learn_and_detect.setEnabled(True)
+        else:
+            self.status_label.setText("Status: Manual editing disabled.")
+            self.btn_refine_model.setEnabled(False)
+            self.btn_learn_and_detect.setEnabled(False)
 
     def add_files(self):
         files, _ = QtWidgets.QFileDialog.getOpenFileNames(
-            self,
-            "Select Files",
-            self.settings.value("lastDir", ""),  
+            self, "Select Files", self.settings.value("lastDir", ""),  
             "All Files (*);;ABF Files (*.abf);;HDF5 Files (*.h5)"
         )
-        if not files:
-            return
-
+        if not files: return
         last_dir = os.path.dirname(files[0])
         self.settings.setValue("lastDir", last_dir)
-
         for fpath in files:
             try:
                 display_names = self.manager.load_file(fpath)
-                if not display_names:
-                    continue
+                if not display_names: continue
                 for name in display_names:
-                    self._add_tree_item(name)
+                    item = QtWidgets.QTreeWidgetItem([os.path.basename(name)])
+                    item.setData(0, QtCore.Qt.UserRole, name)
+                    self.file_tree.addTopLevelItem(item)
                 self.status_label.setText(f"Status: Loaded {os.path.basename(fpath)}")
             except Exception as e:
-                QtWidgets.QMessageBox.critical(
-                    self, "Load Error", f"Error loading {fpath}:\n{str(e)}"
-                )
-
-    def _add_tree_item(self, display_name):
-        item = QtWidgets.QTreeWidgetItem([display_name])
-        item.setData(0, QtCore.Qt.UserRole, display_name)
-        self.file_tree.addTopLevelItem(item)
+                QtWidgets.QMessageBox.critical(self, "Load Error", f"Error loading {fpath}:\n{str(e)}")
 
     def remove_selected(self):
-        """
-        Remove selected items from tree. (Does not remove from SweepManager.data)
-        """
-        paths_to_check = set()
         for item in self.file_tree.selectedItems():
-            name = item.data(0, QtCore.Qt.UserRole)
-            if name in self.manager.data:
-                paths_to_check.add(self.manager.data[name]["filepath"])
-
-        for item in self.file_tree.selectedItems():
-            idx = self.file_tree.indexOfTopLevelItem(item)
-            self.file_tree.takeTopLevelItem(idx)
-
-        for p in paths_to_check:
-            still_exists = False
-            for i in range(self.file_tree.topLevelItemCount()):
-                nm = self.file_tree.topLevelItem(i).data(0, QtCore.Qt.UserRole)
-                if nm in self.manager.data and self.manager.data[nm]["filepath"] == p:
-                    still_exists = True
-                    break
-            if not still_exists and p in self.loaded_paths:
-                self.loaded_paths.remove(p)
-
+            self.file_tree.takeTopLevelItem(self.file_tree.indexOfTopLevelItem(item))
         self.status_label.setText("Status: Removed selected items")
 
-    def on_tree_item_clicked(self, item, column):
-        display_name = item.data(0, QtCore.Qt.UserRole)
-
-        try:
-            signal, fs = self.manager.get_signal(display_name, processed=True)
-            label = "Processed"
-        except KeyError:
-            try:
-                signal, fs = self.manager.get_signal(display_name, processed=False)
-                label = "Raw (fallback)"
-            except KeyError:
-                QtWidgets.QMessageBox.warning(
-                    self, "Plot Error",
-                    f"No 'processed' or 'raw' for {display_name}"
-                )
-                return
-
-        self.canvas.clear()
-        self.canvas.plot_processed_signal(signal, fs, label=label)
+    def on_reset_model_clicked(self):
+        """Resets the HMM model and clears the canvas."""
+        self.canvas.reset_model()
+        self.canvas.clear() # Clears both plot and burst_patches list
         self.canvas.draw()
-        self.status_label.setText(f"Status: Plotted {display_name} ({label})")
+        QtWidgets.QMessageBox.information(self, "Model Status",
+                                            "The HMM model has been reset and the canvas has been cleared.")
+        self.status_label.setText("Status: HMM model reset. Canvas cleared.")
+
+    def on_tree_item_clicked(self, item, column):
+        """
+        Handles a click on a file list item by delegating to the main plot function.
+        """
+        # When an item is clicked, it's not always selected, so we manually
+        # clear the previous selection and select the clicked item.
+        self.file_tree.clearSelection()
+        item.setSelected(True)
+
+        # Uncheck 'Combine all sweeps' for clarity when plotting a single sweep
+        self.chk_combine.setChecked(False)
+
+        # Call the main plotting function
+        self.plot_selected()
 
     def plot_selected(self):
-        from scipy.signal import spectrogram  # global_max
-
         selected_items = self.file_tree.selectedItems()
         if not selected_items:
             QtWidgets.QMessageBox.warning(self, "Warning", "No sweep selected.")
             return
         
         combine = self.chk_combine.isChecked()
-
-        raw_list = []
-        proc_list = []
-        fs_list = []
-        display_order = []
+        raw_list, proc_list, fs_list, display_order = [], [], [], []
+        
         for item in selected_items:
             name = item.data(0, QtCore.Qt.UserRole)
             display_order.append(name)
-
+            sig_raw, sig_proc, fs = None, None, None
             try:
-                sig_raw, _ = self.manager.get_signal(name, processed=False)
-            except KeyError:
-                sig_raw = None
+                sig_raw, fs_r = self.manager.get_signal(name, processed=False)
+                fs = fs_r
+            except KeyError: pass
             try:
-                sig_proc, fs = self.manager.get_signal(name, processed=True)
-            except KeyError:
-                sig_proc, fs = sig_raw, None
+                sig_proc, fs_p = self.manager.get_signal(name, processed=True)
+                fs = fs_p
+            except KeyError: pass
 
             if fs is None:
-                QtWidgets.QMessageBox.critical(self, "Error", f"No sampling rate for {name}.")
+                QtWidgets.QMessageBox.critical(self, "Error", f"Could not determine sampling rate for {name}.")
                 return
-
-            if self.chk_original.isChecked() and sig_raw is None and sig_proc is not None:
-                sig_raw = np.zeros_like(sig_proc)
-            if self.chk_processed.isChecked() and sig_proc is None and sig_raw is not None:
-                sig_proc = sig_raw.copy()
 
             raw_list.append(sig_raw)
             proc_list.append(sig_proc)
             fs_list.append(fs)
 
-        if len(set(fs_list)) > 1:
+        if len(set(fs for fs in fs_list if fs is not None)) > 1:
             QtWidgets.QMessageBox.critical(self, "Error", "Selected sweeps have different sampling rates.")
             return
-        fs0 = fs_list[0]
+        fs0 = next(fs for fs in fs_list if fs is not None)
 
         settings = {
-            "draw_raw":  self.chk_original.isChecked(),
-            "draw_proc": self.chk_processed.isChecked(),
-            "mode_raw":  self.combo_display_org.currentText(),   # "Signal"/"Spectrogram"/"Both"
-            "mode_proc": self.combo_display_proc.currentText(),
-            "nperseg":   self.spin_nperseg.value(),
-            "fmin":      self.spin_fmin.value(),
-            "fmax":      self.spin_fmax.value(),
-            "log_scale": self.chk_log.isChecked()
+            "draw_raw":  self.chk_original.isChecked(), "draw_proc": self.chk_processed.isChecked(),
+            "mode_raw":  self.combo_display_org.currentText(), "mode_proc": self.combo_display_proc.currentText(),
+            "nperseg":   self.spin_nperseg.value(), "fmin": self.spin_fmin.value(),
+            "fmax":      self.spin_fmax.value(), "log_scale": self.chk_log.isChecked()
         }
+        
+        was_editing = self.chk_enable_editing.isChecked()
+        if was_editing: self.canvas.set_editing_enabled(False)
 
+        sig_raw_plot, sig_proc_plot = None, None
+        
         if combine:
-
-            global_max = None
-            need_spec = (
-                settings["draw_proc"] and settings["mode_proc"] in ["Spectrogram", "Both"]
-            ) or (
-                settings["draw_raw"] and settings["mode_raw"] in ["Spectrogram", "Both"]
-            )
-            if need_spec:
-                Sxx_max_list = []
-                for sig in (proc_list if settings["draw_proc"] else raw_list):
-                    if sig is None:
-                        continue
-                    f_i, t_i, Sxx_i = spectrogram(
-                        sig, fs=fs0,
-                        nperseg=settings["nperseg"],
-                        scaling="density",
-                        mode="psd"
-                    )
-                    mask_i = (f_i >= settings["fmin"]) & (f_i <= settings["fmax"])
-                    Sxx_i = Sxx_i[mask_i, :]
-                    if Sxx_i.size > 0:
-                        Sxx_max_list.append(np.max(Sxx_i))
-                if Sxx_max_list:
-                    global_max = max(Sxx_max_list)
-
-            sig_raw_concat = None
-            sig_proc_concat = None
             if settings["draw_raw"]:
                 arrays = [arr for arr in raw_list if arr is not None]
-                if arrays:
-                    sig_raw_concat = np.concatenate(arrays)
+                if arrays: sig_raw_plot = np.concatenate(arrays)
             if settings["draw_proc"]:
                 arrays = [arr for arr in proc_list if arr is not None]
-                if arrays:
-                    sig_proc_concat = np.concatenate(arrays)
-
-            self.canvas.clear()
-            self.canvas.plot_extra(
-                signal_raw  = sig_raw_concat,
-                signal_proc = sig_proc_concat,
-                fs          = fs0,
-                settings    = settings,
-                global_max  = global_max
-            )
-            self.canvas.draw()
-            self.status_label.setText(f"Plotted concatenated {len(display_order)} sweeps.")
-
+                if arrays: sig_proc_plot = np.concatenate(arrays)
+            status_text = f"Plotted concatenated {len(display_order)} sweeps."
         else:
-
-            first_name = display_order[0]
-            try:
-                sig_raw, _ = self.manager.get_signal(first_name, processed=False)
-            except KeyError:
-                sig_raw = None
-            try:
-                sig_proc, fs = self.manager.get_signal(first_name, processed=True)
-            except KeyError:
-                sig_proc, fs = sig_raw, None
-
-            if fs is None:
-                QtWidgets.QMessageBox.critical(self, "Error", f"No sampling rate for {first_name}.")
-                return
-
-            if settings["draw_raw"] and sig_raw is None and sig_proc is not None:
-                sig_raw = np.zeros_like(sig_proc)
-            if settings["draw_proc"] and sig_proc is None and sig_raw is not None:
-                sig_proc = sig_raw.copy()
-
-            global_max = None
-            need_spec = (
-                settings["draw_proc"] and settings["mode_proc"] in ["Spectrogram", "Both"]
-            ) or (
-                settings["draw_raw"] and settings["mode_raw"] in ["Spectrogram", "Both"]
-            )
-            if need_spec:
-                data_sig = sig_proc if sig_proc is not None else sig_raw
-                f_i, t_i, Sxx_i = spectrogram(
-                    data_sig, fs=fs,
-                    nperseg=settings["nperseg"],
-                    scaling="density",
-                    mode="psd"
-                )
-                mask_i = (f_i >= settings["fmin"]) & (f_i <= settings["fmax"])
-                Sxx_i = Sxx_i[mask_i, :]
-                if Sxx_i.size > 0:
-                    global_max = np.max(Sxx_i)
-
-            self.canvas.clear()
-            self.canvas.plot_extra(
-                signal_raw  = sig_raw,
-                signal_proc = sig_proc,
-                fs          = fs,
-                settings    = settings,
-                global_max  = global_max
-            )
-            self.canvas.draw()
-            self.status_label.setText(f"Plotted single sweep: {first_name}")
-
-    def clear_all(self):
-        self.file_tree.clear()
-        self.manager.data.clear()
-
-    def open_context_menu(self, position):
-        menu = QtWidgets.QMenu()
-        remove_action = menu.addAction("Remove Selected")
-        select_all_action = menu.addAction("Select All")
-        clear_action = menu.addAction("clear All")
-
-        action = menu.exec_(self.file_tree.viewport().mapToGlobal(position))
-        if action == remove_action:
-            self.remove_selected()
-        elif action == clear_action:
-            self.clear_all()
-        elif action == select_all_action:
-            self.file_tree.selectAll()
+            if settings["draw_raw"]: sig_raw_plot = raw_list[0]
+            if settings["draw_proc"]: sig_proc_plot = proc_list[0]
+            status_text = f"Plotted single sweep: {os.path.basename(display_order[0])}"
+        
+        self.canvas.clear()
+        self.canvas.plot_extra(
+            signal_raw=sig_raw_plot, signal_proc=sig_proc_plot, fs=fs0, settings=settings
+        )
+        self.status_label.setText(status_text)
+        
+        if was_editing: self.canvas.set_editing_enabled(True)
+        self.canvas.draw()
 
     def on_detect_clicked(self):
-        # 1. Get selected items from the tree
-        selected_items = self.file_tree.selectedItems()
-        if not selected_items:
-            QtWidgets.QMessageBox.warning(self, "Warning", "No sweep selected.")
+        if self.canvas.spec_data_source is None:
+            QtWidgets.QMessageBox.warning(self, "Action Required", "Please plot a signal before running detection.")
             return
-
-        # 2. Get the signal to be analyzed (logic adapted from plot_selected)
-        combine = self.chk_combine.isChecked()
-        
-        # We will use the 'processed' signal for detection if available, otherwise 'raw'.
-        signals_to_process = []
-        fs_list = []
-        for item in selected_items:
-            name = item.data(0, QtCore.Qt.UserRole)
-            try:
-                # Prioritize processed signal for detection
-                signal, fs = self.manager.get_signal(name, processed=True)
-            except KeyError:
-                try:
-                    signal, fs = self.manager.get_signal(name, processed=False)
-                except KeyError:
-                    continue # Skip if no signal data found
-            
-            signals_to_process.append(signal)
-            fs_list.append(fs)
-        
-        if not signals_to_process:
-            QtWidgets.QMessageBox.warning(self, "Warning", "Could not find signal data for selected items.")
-            return
-
-        if len(set(fs_list)) > 1:
-            QtWidgets.QMessageBox.critical(self, "Error", "Selected sweeps have different sampling rates.")
-            return
-        fs = fs_list[0]
-
-        if combine:
-            final_signal = np.concatenate(signals_to_process)
-        else:
-            # If not combining, use the first selected signal
-            final_signal = signals_to_process[0]
-            
-        # 3. Get HMM analysis settings from the UI
-        # Note: The 'SD Threshold' is no longer used by this method.
-        # The crucial parameters are nperseg, fmin, and fmax.
-        settings = {
-            "nperseg": self.spin_nperseg.value(),
-            "fmin": self.spin_fmin.value(),
-            "fmax": self.spin_fmax.value(),
-        }
 
         self.status_label.setText("Status: Running HMM detection... Please wait.")
-        QtWidgets.QApplication.processEvents() # Force UI update
+        QtWidgets.QApplication.processEvents()
 
         try:
-            # 4. Call the new HMM detection method
-            event_pairs = self.canvas.detect_bursts_hmm(final_signal, fs, settings)
-            
-            # 5. Plot the base signal and spectrogram first
-            self.plot_selected()
+            event_pairs = self.canvas.unsupervised_detect()
+            self.plot_selected() 
             
             if not event_pairs:
-                QtWidgets.QMessageBox.information(self, "Detection Result", "No events detected by HMM.")
+                QtWidgets.QMessageBox.information(self, "Detection Result", "No events detected.")
                 self.status_label.setText("Status: HMM detected 0 events.")
                 return
 
-            # 6. Plot the detection lines on top
             self.canvas.plot_detection_lines(event_pairs)
             self.status_label.setText(f"Status: HMM detected {len(event_pairs)} event(s).")
 
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "HMM Error", f"An error occurred during HMM detection:\n{e}")
             self.status_label.setText("Status: HMM detection failed.")
+
+    def clear_all(self):
+        self.file_tree.clear()
+        self.canvas.clear()
+        self.canvas.draw()
+        self.chk_enable_editing.setChecked(False)
+
+    def open_context_menu(self, position):
+        menu = QtWidgets.QMenu()
+        remove_action = menu.addAction("Remove Selected")
+        select_all_action = menu.addAction("Select All")
+        clear_action = menu.addAction("Clear All")
+
+        action = menu.exec_(self.file_tree.viewport().mapToGlobal(position))
+        if action == remove_action: self.remove_selected()
+        elif action == clear_action: self.clear_all()
+        elif action == select_all_action: self.file_tree.selectAll()
             
     def export_pdf(self):
-        """
-        Placeholder: implement PDF export here, using current canvas.figure.savefig(...)
-        """
         self.status_label.setText("[TODO] Exporting to PDF...")
 
     def export_csv(self):
-        """
-        Placeholder: implement CSV export logic here.
-        """
         self.status_label.setText("[TODO] Exporting to CSV...")
 
 
 if __name__ == "__main__":
+    QtWidgets.QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+
+    QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
+    QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
+
     app = QtWidgets.QApplication(sys.argv)
     gui = SpectrogramGeneratorGUI()
     gui.show()
