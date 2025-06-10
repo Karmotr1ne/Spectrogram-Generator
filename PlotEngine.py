@@ -1,5 +1,7 @@
 import numpy as np
 import warnings
+from PyQt5 import QtWidgets, QtCore
+from PyQt5.QtGui import QCursor
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.colors import LinearSegmentedColormap
@@ -321,19 +323,6 @@ class PlotEngine(FigureCanvas):
             self.release_cid = self.fig.canvas.mpl_connect('button_release_event', self.on_release)
             self.motion_cid = self.fig.canvas.mpl_connect('motion_notify_event', self.on_motion)
 
-    def on_press(self, event):
-        if not self.editing_enabled or event.inaxes not in [self.ax_signal, self.ax_spec] or event.xdata is None:
-            return
-        if event.button == 3:
-            if self.hovered_patch:
-                self.remove_patch(self.hovered_patch)
-                self.hovered_patch = None
-            return
-
-        if event.button == 1:
-            self.is_adding = True
-            self.press_x = event.xdata
-
     def on_motion(self, event):
         if not self.editing_enabled or event.inaxes not in [self.ax_signal, self.ax_spec] or event.xdata is None:
             if self.hovered_patch:
@@ -345,6 +334,7 @@ class PlotEngine(FigureCanvas):
 
         xdata = event.xdata
 
+        # If we are in the middle of drawing a new region, update its visual representation
         if self.is_adding and self.press_x is not None:
             if self.adding_patch:
                 self.adding_patch[0].remove()
@@ -356,27 +346,85 @@ class PlotEngine(FigureCanvas):
             self.fig.canvas.draw()
             return
 
+        # This block handles highlighting existing patches as the mouse moves over them
         found_patch = None
         for patch_pair in self.burst_patches:
-            bbox = patch_pair[0].get_extents()
-            if min(bbox.x0, bbox.x1) <= xdata <= max(bbox.x0, bbox.x1):
+            patch = patch_pair[0] if event.inaxes is self.ax_signal else patch_pair[1]
+            contains, _ = patch.contains(event)
+            if contains:
                 found_patch = patch_pair
                 break
-
-        if found_patch and found_patch != self.hovered_patch:
-
+        
+        if found_patch is not self.hovered_patch:
+            # Reset the old hovered patch
             if self.hovered_patch:
                 self.hovered_patch[0].set_color(self.ROI_COLOR)
                 self.hovered_patch[1].set_color(self.ROI_COLOR)
-            found_patch[0].set_color(self.HOVER_COLOR)
-            found_patch[1].set_color(self.HOVER_COLOR)
+            
+            # Highlight the new one
+            if found_patch:
+                found_patch[0].set_color(self.HOVER_COLOR)
+                found_patch[1].set_color(self.HOVER_COLOR)
+
             self.hovered_patch = found_patch
             self.fig.canvas.draw()
-        elif not found_patch and self.hovered_patch:
-            self.hovered_patch[0].set_color(self.ROI_COLOR)
-            self.hovered_patch[1].set_color(self.ROI_COLOR)
-            self.hovered_patch = None
-            self.fig.canvas.draw()
+
+
+    def on_press(self, event):
+        if not self.editing_enabled or event.inaxes not in [self.ax_signal, self.ax_spec] or event.xdata is None:
+            return
+        if event.button == 3 and self.hovered_patch:
+            menu = QtWidgets.QMenu(self.parent())
+            delete_action = menu.addAction("Delete") # 原来的 "Delet" 已修正
+            merge_action  = menu.addAction("Merge")
+            global_pos = QCursor.pos()
+
+            chosen = menu.exec_(global_pos)
+
+            if chosen == delete_action:
+                self.remove_patch(self.hovered_patch)
+                self.hovered_patch = None
+
+            elif chosen == merge_action:
+                big_sig = self.hovered_patch[0]
+                big_ext = big_sig.get_extents()
+                contained = []
+                for p in list(self.burst_patches):
+                    if p is self.hovered_patch:
+                        continue
+                    ext = p[0].get_extents()
+                    if ext.x0 >= big_ext.x0 and ext.x1 <= big_ext.x1:
+                        contained.append(p)
+
+                if len(contained) >= 2:
+                    inv = self.ax_signal.transData.inverted()
+                    starts, ends = [], []
+                    for p in contained:
+                        ex = p[0].get_extents()
+                        t0, _ = inv.transform((ex.x0, ex.y0))
+                        t1, _ = inv.transform((ex.x1, ex.y0))
+                        starts.append(min(t0, t1))
+                        ends.append(max(t0, t1))
+                    t_start, t_end = min(starts), max(ends)
+
+                    for p in contained + [self.hovered_patch]:
+                        self.remove_patch(p)
+                    new_sig = self.ax_signal.axvspan(t_start, t_end,
+                                                     color=self.ROI_COLOR,
+                                                     alpha=0.5, zorder=10)
+                    new_spec = self.ax_spec.axvspan(t_start, t_end,
+                                                     color=self.ROI_COLOR,
+                                                     alpha=0.5, zorder=10)
+                    self.burst_patches.append((new_sig, new_spec))
+                    self.fig.canvas.draw()
+
+                self.hovered_patch = None
+
+            return
+
+        if event.button == 1:
+            self.is_adding = True
+            self.press_x = event.xdata
 
     def on_release(self, event):
         if not self.editing_enabled or not self.is_adding or event.xdata is None:
