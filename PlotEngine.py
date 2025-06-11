@@ -12,7 +12,7 @@ class PlotEngine(FigureCanvas):
 
     def __init__(self, *args, **kwargs):
         self.fig = Figure(constrained_layout=True)
-        super().__init__(self.fig)
+        super().__init__(self.fig,)
         self.ax_signal = None
         self.ax_spec = None
         self._create_axes()
@@ -53,11 +53,13 @@ class PlotEngine(FigureCanvas):
         if self.ax_signal is None: self._create_axes()
         
         if settings.get("draw_raw") and signal_raw is not None:
-            self.ax_signal.plot(np.arange(len(signal_raw))/fs, signal_raw, color='gray', label='Raw')
+            self.ax_signal.plot(np.arange(len(signal_raw))/fs, signal_raw, color='blue', label='Raw')
         if settings.get("draw_proc") and signal_proc is not None:
             self.ax_signal.plot(np.arange(len(signal_proc))/fs, signal_proc, color='black', label='Processed')
         if self.ax_signal.has_data():
-            self.ax_signal.set_ylabel("Amplitude"); self.ax_signal.legend(loc="upper right")
+            self.ax_signal.set_ylabel("Amplitude")
+            leg = self.ax_signal.legend(loc="upper right", frameon=True)
+            leg.set_zorder(100)
 
         source_candidate = None
         if settings["mode_proc"] in ["Spectrogram", "Both"] and signal_proc is not None:
@@ -95,7 +97,9 @@ class PlotEngine(FigureCanvas):
         self.ax_spec.set_xlim(0, t[-1]); self.ax_spec.set_ylim(fmin, f[-1])
         self.last_t = t.copy()
 
-    def _calculate_features(self, signal, fs, settings):
+    def _calculate_features(self, signal, fs=None, settings=None):
+        fs       = fs or self.last_fs
+        settings = settings or self.last_settings
         f, t, Sxx = spectrogram(signal, fs=fs, nperseg=settings['nperseg'], scaling="density", mode="psd")
         Sxx = np.asarray(Sxx)
         f = np.asarray(f)
@@ -109,6 +113,16 @@ class PlotEngine(FigureCanvas):
         return t, np.column_stack([log_power, delta_log_power])
 
     def learn_and_detect(self):
+        t, features = self._calculate_features(self.spec_data_source)
+        print("=== DEBUG ROI time ranges and indices ===")
+        for i, (sig_patch, _) in enumerate(self.burst_patches):
+            bbox = sig_patch.get_extents()
+            start_t, end_t = bbox.x0, bbox.x1
+            idx_start = np.searchsorted(t, start_t)
+            idx_end   = np.searchsorted(t, end_t)
+            print(f"ROI #{i+1}: time [{start_t:.3f}, {end_t:.3f}] s → indices [{idx_start}, {idx_end}]")
+        print("t range:", t[0], "~", t[-1], "step", t[1]-t[0])
+        
         if self.spec_data_source is None: raise ValueError("Please plot a spectrogram before learning.")
         if not self.burst_patches: raise ValueError("No manual regions provided to learn from.")
         
@@ -369,7 +383,6 @@ class PlotEngine(FigureCanvas):
             self.hovered_patch = found_patch
             self.fig.canvas.draw()
 
-
     def on_press(self, event):
         if not self.editing_enabled or event.inaxes not in [self.ax_signal, self.ax_spec] or event.xdata is None:
             return
@@ -464,4 +477,4 @@ class PlotEngine(FigureCanvas):
             patch_sig = self.ax_signal.axvspan(tr, tf, color=self.ROI_COLOR, alpha=0.5, zorder=10)
             patch_spec = self.ax_spec.axvspan(tr, tf, color=self.ROI_COLOR, alpha=0.5, zorder=10)
             self.burst_patches.append((patch_sig, patch_spec))
-        self.fig.canvas.draw()
+        self.fig.canvas.draw() 

@@ -94,7 +94,7 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         left_layout.addWidget(params_group)
 
         # Group 4: Automatic Detection (Unsupervised)
-        auto_detect_group = QGroupBox("Automatic Detection (Unsupervised)")
+        auto_detect_group = QGroupBox("Unsupervised Detection")
         auto_detect_layout = QVBoxLayout(auto_detect_group)
         self.btn_plot = QtWidgets.QPushButton("Plot Signal")
         self.btn_plot.setToolTip("Plot the selected signal(s) based on the display options.")
@@ -106,7 +106,7 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         left_layout.addWidget(auto_detect_group)
 
         # Group 5: Manual Correction & Training (Semi-Supervised)
-        semi_supervised_group = QGroupBox("Manual Correction & Training (Semi-Supervised)")
+        semi_supervised_group = QGroupBox("Semi-Supervised Detection")
         semi_supervised_layout = QVBoxLayout(semi_supervised_group)
 
         self.chk_enable_editing = QtWidgets.QCheckBox("Enable Manual Editing")
@@ -245,11 +245,6 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Learning Error", f"An error occurred during learning:\n{e}")
             self.status_label.setText("Status: Learning or detection failed.")
-
-    def on_reset_model_clicked(self):
-        self.canvas.reset_model()
-        QtWidgets.QMessageBox.information(self, "Model Status", "The HMM model has been reset to its default state.")
-        self.status_label.setText("Status: HMM model has been reset.")
 
     def on_editing_mode_changed(self, is_checked):
         self.canvas.set_editing_enabled(is_checked)
