@@ -317,57 +317,73 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Warning", "No sweep selected.")
             return
 
-        # Store the high-level context
         self.currently_plotted_items = selected_items
         self.is_current_plot_combined = self.chk_combine.isChecked()
 
-        # 1. Gather all necessary info from sources
         sweeps_info = []
         fs_set = set()
+
+        # This new loop is more robust. It gets the "true" fs first.
         for item in selected_items:
             name = item.data(0, QtCore.Qt.UserRole)
-            sig_raw, sig_proc, fs = None, None, None
+            
+            # Step 1: Get the single, authoritative sampling rate from the manager.
+            # This is the "source of truth" loaded directly from the file.
             try:
-                sig_raw, fs = self.manager.get_signal(name, processed=False)
-            except KeyError: pass
-            try:
-                sig_proc, fs_p = self.manager.get_signal(name, processed=True)
-                fs = fs_p if fs is None else fs
-            except KeyError: pass
-
-            if fs is None:
-                QtWidgets.QMessageBox.critical(self, "Error", f"Could not determine sampling rate for {name}.")
+                definitive_fs = self.manager.data[name]['fs']
+                if definitive_fs is None or definitive_fs <= 0:
+                    # This catches cases where fs might be None or 0 in the file data
+                    raise ValueError(f"Invalid sampling rate ({definitive_fs})")
+            except (KeyError, ValueError) as e:
+                QtWidgets.QMessageBox.critical(self, "Data Error", f"Could not retrieve a valid sampling rate for '{os.path.basename(name)}'.\nPlease check the source file's metadata.\n\nError: {e}")
                 return
-            fs_set.add(fs)
-            sweeps_info.append({'item': item, 'signal_raw': sig_raw, 'signal_proc': sig_proc, 'fs': fs})
+            
+            fs_set.add(definitive_fs)
 
+            # Step 2: Get the signal data. We will use the definitive_fs we just confirmed.
+            try:
+                sig_raw, _ = self.manager.get_signal(name, processed=False)
+            except KeyError:
+                sig_raw = None
+            try:
+                sig_proc, _ = self.manager.get_signal(name, processed=True)
+            except KeyError:
+                sig_proc = None
+
+            sweeps_info.append({'item': item, 'signal_raw': sig_raw, 'signal_proc': sig_proc, 'fs': definitive_fs})
+
+        # Step 3: Check for fs consistency across multiple files
         if len(fs_set) > 1:
-            QtWidgets.QMessageBox.critical(self, "Error", "Selected sweeps have different sampling rates.")
+            QtWidgets.QMessageBox.critical(self, "Error", "Selected sweeps have different sampling rates and cannot be plotted together.")
             return
 
-        # 2. Gather all UI settings
+        # Step 4: Gather UI settings
         settings = {
             "combine": self.is_current_plot_combined,
-            "draw_raw": self.chk_original.isChecked(), "draw_proc": self.chk_processed.isChecked(),
-            "mode_raw": self.combo_display_org.currentText(), "mode_proc": self.combo_display_proc.currentText(),
-            "nperseg": self.spin_nperseg.value(), "fmin": self.spin_fmin.value(),
-            "fmax": self.spin_fmax.value(), "log_scale": self.chk_log.isChecked()
+            "draw_raw": self.chk_original.isChecked(),
+            "draw_proc": self.chk_processed.isChecked(),
+            "mode_raw": self.combo_display_org.currentText(),
+            "mode_proc": self.combo_display_proc.currentText(),
+            "nperseg": self.spin_nperseg.value(),
+            "fmin": self.spin_fmin.value(),
+            "fmax": self.spin_fmax.value(),
+            "log_scale": self.chk_log.isChecked()
         }
-
+        
         was_editing = self.chk_enable_editing.isChecked()
         if was_editing: self.canvas.set_editing_enabled(False)
 
-        # 3. Delegate all plotting work to the PlotEngine
+        # Step 5: Delegate all plotting work to the PlotEngine
         self.canvas.plot_sweeps(sweeps_info, settings)
-
-        # 4. Update status label
+        
+        # Step 6: Update status label
         if settings["combine"]:
             status_text = f"Plotted concatenated {len(sweeps_info)} sweeps."
         else:
             name = sweeps_info[0]['item'].data(0, QtCore.Qt.UserRole)
             status_text = f"Plotted single sweep: {os.path.basename(name)}"
         self.status_label.setText(status_text)
-
+        
         if was_editing: self.canvas.set_editing_enabled(True)
         self.canvas.draw()
 
@@ -381,7 +397,7 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
 
         try:
             event_pairs = self.canvas.unsupervised_detect()
-            
+
             if not event_pairs:
                 QtWidgets.QMessageBox.information(self, "Detection Result", "No events detected.")
                 self.status_label.setText("Status: HMM detected 0 events.")
@@ -393,7 +409,7 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "HMM Error", f"An error occurred during HMM detection:\n{e}")
             self.status_label.setText("Status: HMM detection failed.")
-
+    
     def clear_all(self):
         self.file_tree.clear()
         self.canvas.clear()
@@ -449,6 +465,7 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         # All required context is now inside the self.canvas object
         status = self.exporter.export_to_csv(filepath=filepath, plot_engine=self.canvas)
         self.status_label.setText(status)
+
 
 if __name__ == "__main__":
     QtWidgets.QApplication.setHighDpiScaleFactorRoundingPolicy(

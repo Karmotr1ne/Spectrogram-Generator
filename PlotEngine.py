@@ -43,6 +43,41 @@ class PlotEngine(FigureCanvas):
         
         self.press_cid = self.release_cid = self.motion_cid = None
     
+    def _get_correct_xdata(self, event):
+        """
+        Workaround for a bug in Matplotlib/Qt High-DPI scaling where
+        event.xdata can be incorrect. This function manually calculates the
+        data coordinate from the event's pixel coordinate.
+        """
+        # We need to use the axes the event occurred in (signal or spectrogram)
+        ax = event.inaxes
+        if ax is None:
+            return None
+
+        # Get axis limits in data coordinates (e.g., in seconds)
+        xlims = ax.get_xlim()
+        
+        # Get the bounding box of the axes in pixel coordinates
+        ax_bbox_pixels = ax.get_window_extent()
+        
+        # The x-coordinate of the mouse event in pixels
+        mouse_x_pixel = event.x
+        
+        # Avoid division by zero if the axis has no width
+        if ax_bbox_pixels.width == 0:
+            return xlims[0]
+            
+        # Calculate the position of the mouse as a fraction of the axis width
+        fraction = (mouse_x_pixel - ax_bbox_pixels.x0) / ax_bbox_pixels.width
+        
+        # Ensure the fraction is within the valid range [0, 1]
+        fraction = max(0.0, min(1.0, fraction))
+        
+        # Convert this fraction back to a data coordinate
+        correct_x = xlims[0] + fraction * (xlims[1] - xlims[0])
+        
+        return correct_x
+
     def _create_axes(self):
         gs = self.fig.add_gridspec(nrows=2, ncols=1, height_ratios=[1, 1]) # 不再有 hspace=0.0
         self.ax_signal = self.fig.add_subplot(gs[0, 0])
@@ -447,7 +482,9 @@ class PlotEngine(FigureCanvas):
                 self.fig.canvas.draw()
             return
 
-        xdata = event.xdata
+        xdata = self._get_correct_xdata(event)
+        if xdata is None:
+            return
 
         # If we are in the middle of drawing a new region, update its visual representation
         if self.is_adding and self.press_x is not None:
@@ -487,6 +524,11 @@ class PlotEngine(FigureCanvas):
     def on_press(self, event):
         if not self.editing_enabled or event.inaxes not in [self.ax_signal, self.ax_spec] or event.xdata is None:
             return
+        
+        press_x = self._get_correct_xdata(event)
+        if press_x is None:
+            return
+        
         if event.button == 3 and self.hovered_patch:
             menu = QtWidgets.QMenu(self.parent())
             delete_action = menu.addAction("Delete") # 原来的 "Delet" 已修正
@@ -510,27 +552,43 @@ class PlotEngine(FigureCanvas):
                     if ext.x0 >= big_ext.x0 and ext.x1 <= big_ext.x1:
                         contained.append(p)
 
-                if len(contained) >= 2:
-                    inv = self.ax_signal.transData.inverted()
-                    starts, ends = [], []
-                    for p in contained:
-                        ex = p[0].get_extents()
-                        t0, _ = inv.transform((ex.x0, ex.y0))
-                        t1, _ = inv.transform((ex.x1, ex.y0))
-                        starts.append(min(t0, t1))
-                        ends.append(max(t0, t1))
-                    t_start, t_end = min(starts), max(ends)
+            contained = []
+            big_ext = self.hovered_patch[0].get_extents()
+            for p in self.burst_patches:
+                if p is self.hovered_patch:
+                    continue
+                ext = p[0].get_extents()
+                # Check if patch 'p' is completely inside the hovered_patch
+                if ext.x0 >= big_ext.x0 and ext.x1 <= big_ext.x1:
+                    contained.append(p)
 
-                    for p in contained + [self.hovered_patch]:
-                        self.remove_patch(p)
-                    new_sig = self.ax_signal.axvspan(t_start, t_end,
-                                                     color=self.ROI_COLOR,
-                                                     alpha=0.5, zorder=10)
-                    new_spec = self.ax_spec.axvspan(t_start, t_end,
-                                                     color=self.ROI_COLOR,
-                                                     alpha=0.5, zorder=10)
-                    self.burst_patches.append((new_sig, new_spec))
-                    self.fig.canvas.draw()
+            # Proceed if there is at least one patch to merge with the container
+            if contained:
+                starts, ends = [], []
+                
+                # Collect the start/end times from the container patch and all patches within it
+                patches_to_merge = contained + [self.hovered_patch]
+                for p in patches_to_merge:
+                    ext = p[0].get_extents()
+                    starts.append(ext.x0)
+                    ends.append(ext.x1)
+                
+                # The new merged region spans from the earliest start to the latest end time
+                t_start, t_end = min(starts), max(ends)
+
+                # Remove all the old patches
+                for p in patches_to_merge:
+                    self.remove_patch(p)
+                
+                # Create a single new patch representing the merged region
+                new_sig = self.ax_signal.axvspan(t_start, t_end,
+                                                color=self.ROI_COLOR,
+                                                alpha=0.5, zorder=10)
+                new_spec = self.ax_spec.axvspan(t_start, t_end,
+                                                color=self.ROI_COLOR,
+                                                alpha=0.5, zorder=10)
+                self.burst_patches.append((new_sig, new_spec))
+                self.fig.canvas.draw()
 
                 self.hovered_patch = None
 
@@ -538,16 +596,17 @@ class PlotEngine(FigureCanvas):
 
         if event.button == 1:
             self.is_adding = True
-            self.press_x = event.xdata
+            self.press_x = press_x
 
     def on_release(self, event):
-        if not self.editing_enabled or not self.is_adding or event.xdata is None:
+        xdata = self._get_correct_xdata(event)
+
+        # Check for invalid state or if the release happened outside the axes
+        if not self.editing_enabled or not self.is_adding or xdata is None:
             if self.adding_patch:
                 self.adding_patch[0].remove(); self.adding_patch[1].remove()
             self.is_adding = self.adding_patch = self.press_x = None
             return
-
-        xdata = event.xdata
 
         if self.adding_patch:
             self.adding_patch[0].remove()
