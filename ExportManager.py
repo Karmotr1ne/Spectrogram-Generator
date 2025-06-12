@@ -36,12 +36,16 @@ class ExportManager:
             plotted_items = plot_engine.currently_plotted_items
             is_combined = True if segment_map else False
 
-            time_pairs = []
-            for sig_patch, _ in plot_engine.burst_patches:
-                extents = sig_patch.get_extents()
-                start_t = min(extents.x0, extents.x1)
-                end_t = max(extents.x0, extents.x1)
-                time_pairs.append((start_t, end_t))
+            t_grid = getattr(plot_engine, 'last_t', None)
+            
+            if hasattr(plot_engine, 'last_detected_events'):
+                time_pairs = list(plot_engine.last_detected_events)
+            else:
+                # fallback
+                time_pairs = []
+                for sig_patch, _ in plot_engine.burst_patches:
+                    ext = sig_patch.get_extents()
+                    time_pairs.append((min(ext.x0, ext.x1), max(ext.x0, ext.x1)))
 
             sorted_bursts = sorted(time_pairs)
 

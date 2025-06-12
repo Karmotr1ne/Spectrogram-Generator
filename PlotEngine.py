@@ -44,39 +44,21 @@ class PlotEngine(FigureCanvas):
         self.press_cid = self.release_cid = self.motion_cid = None
     
     def _get_correct_xdata(self, event):
-        """
-        Workaround for a bug in Matplotlib/Qt High-DPI scaling where
-        event.xdata can be incorrect. This function manually calculates the
-        data coordinate from the event's pixel coordinate.
-        """
-        # We need to use the axes the event occurred in (signal or spectrogram)
+
         ax = event.inaxes
         if ax is None:
             return None
 
-        # Get axis limits in data coordinates (e.g., in seconds)
-        xlims = ax.get_xlim()
-        
-        # Get the bounding box of the axes in pixel coordinates
-        ax_bbox_pixels = ax.get_window_extent()
-        
-        # The x-coordinate of the mouse event in pixels
-        mouse_x_pixel = event.x
-        
-        # Avoid division by zero if the axis has no width
-        if ax_bbox_pixels.width == 0:
-            return xlims[0]
-            
-        # Calculate the position of the mouse as a fraction of the axis width
-        fraction = (mouse_x_pixel - ax_bbox_pixels.x0) / ax_bbox_pixels.width
-        
-        # Ensure the fraction is within the valid range [0, 1]
-        fraction = max(0.0, min(1.0, fraction))
-        
-        # Convert this fraction back to a data coordinate
-        correct_x = xlims[0] + fraction * (xlims[1] - xlims[0])
-        
-        return correct_x
+        if event.xdata is not None:
+            return event.xdata
+
+        try:
+            inv = ax.transData.inverted()
+
+            xdata, _ = inv.transform((event.x, event.y))
+            return xdata
+        except Exception:
+            return None
 
     def _create_axes(self):
         gs = self.fig.add_gridspec(nrows=2, ncols=1, height_ratios=[1, 1]) # 不再有 hspace=0.0
@@ -305,6 +287,7 @@ class PlotEngine(FigureCanvas):
         if in_event: events.append((start_time, t[-1]))
 
         print("--- [DEBUG] Finished learn_and_detect ---")
+        self.last_detected_events = events
         return events
     
     def _train_supervised(self, features, labels):
@@ -450,7 +433,7 @@ class PlotEngine(FigureCanvas):
         # If the signal ends while an event is active, close the event at the very last time point.
         if in_event:
             events.append((start_time, t[-1]))
-        
+        self.last_detected_events = events
         return events
 
     def reset_model(self):
