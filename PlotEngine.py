@@ -23,6 +23,10 @@ class PlotEngine(FigureCanvas):
         self.last_fs = None
         self.last_settings = None
         self.last_t = np.array([])
+        self.last_f = None
+        self.last_Sxx = None
+        self.segment_map = []
+        self.currently_plotted_items = []
 
         self.editing_enabled = False
         self.burst_patches = []
@@ -46,6 +50,8 @@ class PlotEngine(FigureCanvas):
         
     def clear(self):
         self.burst_patches.clear()
+        self.segment_map.clear()
+        self.currently_plotted_items.clear()
         self.fig.clf()
         self._create_axes()
 
@@ -82,7 +88,15 @@ class PlotEngine(FigureCanvas):
         f, t, Sxx = spectrogram(data, fs=fs, nperseg=nperseg, scaling="density", mode="psd")
         mask = (f >= fmin) & (f <= fmax)
         f, Sxx = f[mask], Sxx[mask, :]
-        if Sxx.size == 0: self.last_t = np.array([]); return
+
+        # ADD THIS BLOCK to store data for export
+        self.last_f = f.copy()
+        self.last_t = t.copy()
+        self.last_Sxx = Sxx.copy()
+        
+        if Sxx.size == 0: 
+            self.last_t = np.array([])
+            return
         
         base = np.max(Sxx) if global_max is None or global_max <= 0 else global_max
         Sxx_norm = np.clip(Sxx / (base + 1e-20), 0.0, 1.0)
@@ -96,6 +110,58 @@ class PlotEngine(FigureCanvas):
         self.fig.colorbar(pcm, ax=self.ax_spec, orientation='vertical', label="Normalized Power")
         self.ax_spec.set_xlim(0, t[-1]); self.ax_spec.set_ylim(fmin, f[-1])
         self.last_t = t.copy()
+
+    def plot_sweeps(self, sweeps_info, settings):
+        """
+        High-level plotting method that handles signal combination and segment map creation.
+        """
+        self.clear() # Start fresh
+        self.currently_plotted_items = [info['item'] for info in sweeps_info]
+
+        combine = settings.get("combine", False)
+        fs0 = sweeps_info[0]['fs'] if sweeps_info else 0
+
+        sig_raw_plot, sig_proc_plot = None, None
+
+        if combine:
+            current_time_offset = 0.0
+            concatenated_signal = []
+
+            # Determine which signal source is primary (Processed > Raw)
+            use_proc = settings.get("draw_proc", True)
+
+            for info in sweeps_info:
+                signal_to_use = info['signal_proc'] if use_proc and info['signal_proc'] is not None else info['signal_raw']
+
+                if signal_to_use is None:
+                    continue
+
+                duration = len(signal_to_use) / info['fs']
+                self.segment_map.append({
+                    'start_time_combined': current_time_offset,
+                    'end_time_combined': current_time_offset + duration,
+                    'source_item': info['item']
+                })
+                concatenated_signal.append(signal_to_use)
+                current_time_offset += duration
+
+            if concatenated_signal:
+                final_signal = np.concatenate(concatenated_signal)
+                # Assign the concatenated signal to the correct plot variable
+                if use_proc and any(info['signal_proc'] is not None for info in sweeps_info):
+                    sig_proc_plot = final_signal
+                else:
+                    sig_raw_plot = final_signal
+
+        else: # Not combining
+            info = sweeps_info[0]
+            sig_raw_plot = info['signal_raw'] if settings.get("draw_raw") else None
+            sig_proc_plot = info['signal_proc'] if settings.get("draw_proc") else None
+
+        # Call the lower-level plot function with the prepared data
+        self.plot_extra(
+            signal_raw=sig_raw_plot, signal_proc=sig_proc_plot, fs=fs0, settings=settings
+        )
 
     def _calculate_features(self, signal, fs=None, settings=None):
         fs       = fs or self.last_fs
@@ -214,23 +280,19 @@ class PlotEngine(FigureCanvas):
             num_samples = state_features.shape[0]
 
             if num_samples > 1:
-                # Case 1: More than 1 sample. Calculate mean and variance normally.
                 mean = state_features.mean(axis=0)
                 var = state_features.var(axis=0) + 1e-6
                 new_means.append(mean)
                 new_covars.append(var)
 
             elif num_samples == 1:
-                # Case 2: Exactly 1 sample. Use its value as the mean, and a default small variance.
-                # This is much more representative than a generic [0,0].
                 print(f"[DEBUG] INFO: State {i} has 1 sample. Using its features as the mean.")
-                mean = state_features[0] # Use the single sample's features as the mean
-                var = np.ones(features.shape[1]) * 1e-6 # Variance cannot be calculated, use default
+                mean = state_features[0]
+                var = np.ones(features.shape[1]) * 1e-6
                 new_means.append(mean)
                 new_covars.append(var)
 
             else: # num_samples == 0
-                # Case 3: No samples. Use a generic default.
                 print(f"[DEBUG] WARNING: State {i} has 0 samples. Using default parameters.")
                 mean = np.zeros(features.shape[1])
                 var = np.ones(features.shape[1]) * 1e-6
@@ -247,17 +309,22 @@ class PlotEngine(FigureCanvas):
         
         # 2. Normalize rows that have observed transitions
         sum_of_rows = transmat.sum(axis=1, keepdims=True)
-        # Use 'where' to avoid division by zero warnings for rows that are all zeros.
         transmat_prob = np.divide(transmat, sum_of_rows, 
-                                  out=np.zeros_like(transmat, dtype=float), 
-                                  where=sum_of_rows != 0)
+                                out=np.zeros_like(transmat, dtype=float), 
+                                where=sum_of_rows != 0)
         
         # 3. For states with no outgoing transitions (rows summing to 0),
-        #    set their self-transition probability to 1.0. This ensures the row sums to 1.
+        #    set their self-transition probability to 1.0.
         no_transition_states = np.where(sum_of_rows.flatten() == 0)[0]
         for state_idx in no_transition_states:
             transmat_prob[state_idx, state_idx] = 1.0
             print(f"[DEBUG] State {state_idx} has no outgoing transitions. Setting self-transition probability to 1.")
+
+        # 4. Manually enforce the transition from 'falling edge' (State 3) back to 'baseline' (State 0).
+        if n_states > 3: # Ensure this logic only applies if there are enough states
+            transmat_prob[3, :] = 0.0  # Erase any learned probabilities for State 3
+            transmat_prob[3, 0] = 1.0  # Set the probability of (State 3 -> State 0) to 100%
+
 
         self.model.transmat_ = transmat_prob
 
@@ -285,36 +352,70 @@ class PlotEngine(FigureCanvas):
         burst_indices = np.where(states == burst_state)[0]
         if len(burst_indices) == 0: return None
         return roi_t[burst_indices[0]], roi_t[burst_indices[-1]]
-    
+
     def unsupervised_detect(self):
         if self.spec_data_source is None: raise ValueError("Please plot a spectrogram before detecting.")
 
         t, features = self._calculate_features(self.spec_data_source, self.last_fs, self.last_settings)
-        if t is None: return []
+        if t is None or len(t) == 0: return []
 
         if not self.is_model_refined:
             if len(features) < self.model.n_components:
                 raise ValueError("Not enough data to train the model. Signal may be too short.")
             self.model.fit(features)
-        
+            
+            state_means = np.asarray(self.model.means_)
+            baseline_state = np.argmin(state_means[:, 0])
+            transmat = self.model.transmat_.copy()
+            
+            print(f"[DEBUG] Unsupervised: Baseline state identified as #{baseline_state}")
+            
+            for i in range(self.model.n_components):
+                if i == baseline_state: continue
+                if transmat[i, baseline_state] < 1e-5:
+                    if transmat[i, i] > 0.1:
+                        donation = min(transmat[i, i] * 0.05, 0.05)
+                        transmat[i, i] -= donation
+                        transmat[i, baseline_state] += donation
+                        print(f"[DEBUG] Forcing escape route for State {i} to baseline state {baseline_state}.")
+
+            self.model.transmat_ = transmat
+                
         hidden_states = self.model.predict(features)
 
         state_means = np.asarray(self.model.means_)
         if state_means.ndim != 2:
             raise TypeError(f"HMM means has unexpected dimension: {state_means.ndim}. Expected 2.")
 
-        baseline_state, rising_state = np.argmin(state_means[:, 0]), np.argmax(state_means[:, 1])
+        baseline_state = np.argmin(state_means[:, 0])
 
         events, in_event, start_time = [], False, 0.0
+
         for i in range(1, len(hidden_states)):
-            if not in_event and hidden_states[i-1] == baseline_state and hidden_states[i] == rising_state:
-                in_event, start_time = True, t[i]
-            elif in_event and hidden_states[i] == baseline_state:
+            is_baseline_now = (hidden_states[i] == baseline_state)
+            was_baseline_before = (hidden_states[i-1] == baseline_state)
+
+            if not in_event and was_baseline_before and not is_baseline_now:
+                in_event = True
+                # The event truly starts at the time of the LAST baseline point,
+                # which is t[i-1].
+                start_time = t[i-1] 
+
+            elif in_event and is_baseline_now and not was_baseline_before:
                 in_event = False
-                if t[i] > start_time: events.append((start_time, t[i]))
-        if in_event: events.append((start_time, t[-1]))
+                # The burst ends at the time of the LAST non-baseline point before
+                # returning to baseline, which is also t[i-1].
+                end_time = t[i-1]
+                if end_time > start_time:
+                    events.append((start_time, end_time))
+
+
+        # If the signal ends while an event is active, close the event at the very last time point.
+        if in_event:
+            events.append((start_time, t[-1]))
+        
         return events
-    
+
     def reset_model(self):
         """Resets the HMM to its initial, untrained state."""
         self.model = hmm.GaussianHMM(n_components=4, covariance_type="diag", n_iter=100, random_state=42)

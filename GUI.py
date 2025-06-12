@@ -1,7 +1,8 @@
-import sys, os
+import sys, os, re
 import numpy as np
 from SweepManager import SweepManager
 from PlotEngine import PlotEngine
+from ExportManager import ExportManager
 from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QGroupBox, QGridLayout, QVBoxLayout, QHBoxLayout, QFrame
@@ -12,6 +13,11 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         super().__init__()
 
         self.manager = SweepManager()
+        self.exporter = ExportManager()
+
+        self.currently_plotted_items = []
+        self.is_current_plot_combined = False
+        self.plot_segment_map = []
 
         self.setWindowTitle("Spectrogram Generator")
         self.resize(1200, 750)
@@ -232,7 +238,6 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
 
         try:
             event_pairs = self.canvas.learn_and_detect()
-            self.plot_selected() 
             
             if not event_pairs:
                 QtWidgets.QMessageBox.information(self, "Detection Result", "Could not detect any bursts after learning.")
@@ -311,67 +316,58 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         if not selected_items:
             QtWidgets.QMessageBox.warning(self, "Warning", "No sweep selected.")
             return
-        
-        combine = self.chk_combine.isChecked()
-        raw_list, proc_list, fs_list, display_order = [], [], [], []
-        
+
+        # Store the high-level context
+        self.currently_plotted_items = selected_items
+        self.is_current_plot_combined = self.chk_combine.isChecked()
+
+        # 1. Gather all necessary info from sources
+        sweeps_info = []
+        fs_set = set()
         for item in selected_items:
             name = item.data(0, QtCore.Qt.UserRole)
-            display_order.append(name)
             sig_raw, sig_proc, fs = None, None, None
             try:
-                sig_raw, fs_r = self.manager.get_signal(name, processed=False)
-                fs = fs_r
+                sig_raw, fs = self.manager.get_signal(name, processed=False)
             except KeyError: pass
             try:
                 sig_proc, fs_p = self.manager.get_signal(name, processed=True)
-                fs = fs_p
+                fs = fs_p if fs is None else fs
             except KeyError: pass
 
             if fs is None:
                 QtWidgets.QMessageBox.critical(self, "Error", f"Could not determine sampling rate for {name}.")
                 return
+            fs_set.add(fs)
+            sweeps_info.append({'item': item, 'signal_raw': sig_raw, 'signal_proc': sig_proc, 'fs': fs})
 
-            raw_list.append(sig_raw)
-            proc_list.append(sig_proc)
-            fs_list.append(fs)
-
-        if len(set(fs for fs in fs_list if fs is not None)) > 1:
+        if len(fs_set) > 1:
             QtWidgets.QMessageBox.critical(self, "Error", "Selected sweeps have different sampling rates.")
             return
-        fs0 = next(fs for fs in fs_list if fs is not None)
 
+        # 2. Gather all UI settings
         settings = {
-            "draw_raw":  self.chk_original.isChecked(), "draw_proc": self.chk_processed.isChecked(),
-            "mode_raw":  self.combo_display_org.currentText(), "mode_proc": self.combo_display_proc.currentText(),
-            "nperseg":   self.spin_nperseg.value(), "fmin": self.spin_fmin.value(),
-            "fmax":      self.spin_fmax.value(), "log_scale": self.chk_log.isChecked()
+            "combine": self.is_current_plot_combined,
+            "draw_raw": self.chk_original.isChecked(), "draw_proc": self.chk_processed.isChecked(),
+            "mode_raw": self.combo_display_org.currentText(), "mode_proc": self.combo_display_proc.currentText(),
+            "nperseg": self.spin_nperseg.value(), "fmin": self.spin_fmin.value(),
+            "fmax": self.spin_fmax.value(), "log_scale": self.chk_log.isChecked()
         }
-        
+
         was_editing = self.chk_enable_editing.isChecked()
         if was_editing: self.canvas.set_editing_enabled(False)
 
-        sig_raw_plot, sig_proc_plot = None, None
-        
-        if combine:
-            if settings["draw_raw"]:
-                arrays = [arr for arr in raw_list if arr is not None]
-                if arrays: sig_raw_plot = np.concatenate(arrays)
-            if settings["draw_proc"]:
-                arrays = [arr for arr in proc_list if arr is not None]
-                if arrays: sig_proc_plot = np.concatenate(arrays)
-            status_text = f"Plotted concatenated {len(display_order)} sweeps."
+        # 3. Delegate all plotting work to the PlotEngine
+        self.canvas.plot_sweeps(sweeps_info, settings)
+
+        # 4. Update status label
+        if settings["combine"]:
+            status_text = f"Plotted concatenated {len(sweeps_info)} sweeps."
         else:
-            if settings["draw_raw"]: sig_raw_plot = raw_list[0]
-            if settings["draw_proc"]: sig_proc_plot = proc_list[0]
-            status_text = f"Plotted single sweep: {os.path.basename(display_order[0])}"
-        
-        self.canvas.clear()
-        self.canvas.plot_extra(
-            signal_raw=sig_raw_plot, signal_proc=sig_proc_plot, fs=fs0, settings=settings
-        )
+            name = sweeps_info[0]['item'].data(0, QtCore.Qt.UserRole)
+            status_text = f"Plotted single sweep: {os.path.basename(name)}"
         self.status_label.setText(status_text)
-        
+
         if was_editing: self.canvas.set_editing_enabled(True)
         self.canvas.draw()
 
@@ -385,7 +381,6 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
 
         try:
             event_pairs = self.canvas.unsupervised_detect()
-            self.plot_selected() 
             
             if not event_pairs:
                 QtWidgets.QMessageBox.information(self, "Detection Result", "No events detected.")
@@ -404,6 +399,7 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         self.canvas.clear()
         self.canvas.draw()
         self.chk_enable_editing.setChecked(False)
+        self.currently_plotted_items = []
 
     def open_context_menu(self, position):
         menu = QtWidgets.QMenu()
@@ -417,11 +413,42 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         elif action == select_all_action: self.file_tree.selectAll()
             
     def export_pdf(self):
-        self.status_label.setText("[TODO] Exporting to PDF...")
+        """Exports the current plot to a PDF file."""
+        status = self.exporter.export_to_pdf(self.canvas.fig, self)
+        self.status_label.setText(status)
 
     def export_csv(self):
-        self.status_label.setText("[TODO] Exporting to CSV...")
+        """Handles exporting burst data using the plot context stored in the canvas."""
+        if not self.canvas.currently_plotted_items:
+            QtWidgets.QMessageBox.warning(self, "No Plot Context", 
+                                            "Please plot a signal first before exporting.")
+            return
 
+        if not self.canvas.burst_patches:
+            QtWidgets.QMessageBox.warning(self, "No Data",
+                                            "There are no detected bursts on the plot to export.")
+            return
+
+        first_item_name = self.canvas.currently_plotted_items[0].data(0, QtCore.Qt.UserRole)
+        base_name = re.sub(r'_sweep\d+$', '', os.path.basename(first_item_name))
+        default_filename = f"{base_name}_bursts.csv"
+
+        last_export_dir = self.settings.value("lastExportDir", self.lastDir, type=str)
+
+        filepath, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save Burst Data as CSV", os.path.join(last_export_dir, default_filename), "CSV Files (*.csv)"
+        )
+
+        if not filepath:
+            self.status_label.setText("Status: Export cancelled.")
+            return
+
+        new_export_dir = os.path.dirname(filepath)
+        self.settings.setValue("lastExportDir", new_export_dir)
+
+        # All required context is now inside the self.canvas object
+        status = self.exporter.export_to_csv(filepath=filepath, plot_engine=self.canvas)
+        self.status_label.setText(status)
 
 if __name__ == "__main__":
     QtWidgets.QApplication.setHighDpiScaleFactorRoundingPolicy(
