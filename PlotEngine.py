@@ -71,17 +71,25 @@ class PlotEngine(FigureCanvas):
         self.currently_plotted_items.clear()
         self.fig.clf()
         self._create_axes()
+        self.last_detected_events = []
+        self.last_raw_t = np.array([])
+        self.last_fs = None
 
     def plot_extra(self, signal_raw, signal_proc, fs, settings, global_max=None):
+        self.last_fs = fs
+        
         if self.ax_signal is None: self._create_axes()
         
         if settings.get("draw_raw") and signal_raw is not None:
             self.ax_signal.plot(np.arange(len(signal_raw))/fs, signal_raw, color='blue', label='Raw')
         if settings.get("draw_proc") and signal_proc is not None:
             self.ax_signal.plot(np.arange(len(signal_proc))/fs, signal_proc, color='black', label='Processed')
+        
         if self.ax_signal.has_data():
             self.ax_signal.set_ylabel("Amplitude")
             leg = self.ax_signal.legend(loc="upper right", frameon=True)
+            if hasattr(self, 'last_raw_t') and len(self.last_raw_t)>1:
+                self.ax_signal.set_xlim(0, self.last_raw_t[-1])
             leg.set_zorder(100)
 
         source_candidate = None
@@ -125,7 +133,12 @@ class PlotEngine(FigureCanvas):
         pcm = self.ax_spec.pcolormesh(t, f, Sxx_norm, shading='auto', cmap='jet', vmin=0.0, vmax=1.0, zorder=0)
         self.ax_spec.set_ylabel("Frequency (Hz)"); self.ax_spec.set_xlabel("Time (s)")
         self.fig.colorbar(pcm, ax=self.ax_spec, orientation='vertical', label="Normalized Power")
-        self.ax_spec.set_xlim(0, t[-1]); self.ax_spec.set_ylim(fmin, f[-1])
+        if hasattr(self, 'last_raw_t') and len(self.last_raw_t) > 1:
+            max_time = max(t[-1], self.last_raw_t[-1])
+        else:
+            max_time = t[-1]
+        self.ax_spec.set_xlim(0, max_time)
+        self.ax_spec.set_ylim(fmin, f[-1])
         self.last_t = t.copy()
 
     def plot_sweeps(self, sweeps_info, settings):
@@ -169,6 +182,9 @@ class PlotEngine(FigureCanvas):
                     sig_proc_plot = final_signal
                 else:
                     sig_raw_plot = final_signal
+
+                self.last_raw_t = np.arange(len(final_signal)) / fs0
+                self.last_fs    = fs0
 
         else: # Not combining
             info = sweeps_info[0]
@@ -516,7 +532,7 @@ class PlotEngine(FigureCanvas):
         
         if event.button == 3 and self.hovered_patch:
             menu = QtWidgets.QMenu(self.parent())
-            delete_action = menu.addAction("Delete") # 原来的 "Delet" 已修正
+            delete_action = menu.addAction("Delete") 
             merge_action  = menu.addAction("Merge")
             global_pos = QCursor.pos()
 
@@ -527,45 +543,28 @@ class PlotEngine(FigureCanvas):
                 self.hovered_patch = None
 
             elif chosen == merge_action:
-                big_sig = self.hovered_patch[0]
-                big_ext = big_sig.get_extents()
-                contained = []
-                for p in list(self.burst_patches):
-                    if p is self.hovered_patch:
-                        continue
-                    ext = p[0].get_extents()
-                    if ext.x0 >= big_ext.x0 and ext.x1 <= big_ext.x1:
-                        contained.append(p)
-
-            contained = []
-            big_ext = self.hovered_patch[0].get_extents()
-            for p in self.burst_patches:
-                if p is self.hovered_patch:
-                    continue
-                ext = p[0].get_extents()
-                # Check if patch 'p' is completely inside the hovered_patch
-                if ext.x0 >= big_ext.x0 and ext.x1 <= big_ext.x1:
-                    contained.append(p)
-
-            # Proceed if there is at least one patch to merge with the container
-            if contained:
-                starts, ends = [], []
-                
-                # Collect the start/end times from the container patch and all patches within it
-                patches_to_merge = contained + [self.hovered_patch]
-                for p in patches_to_merge:
-                    ext = p[0].get_extents()
-                    starts.append(ext.x0)
-                    ends.append(ext.x1)
-                
-                # The new merged region spans from the earliest start to the latest end time
+                container_ext = self.hovered_patch[0].get_extents()
+                contained = [
+                    p for p in self.burst_patches
+                    if p is not self.hovered_patch
+                    and p[0].get_extents().x0 >= container_ext.x0
+                    and p[0].get_extents().x1 <= container_ext.x1
+                ]
+                # 如果没有子 ROI，就不做任何事
+                if not contained:
+                    return
+        
+                # 2) 用子 ROI 的最早 start / 最晚 end 计算新范围
+                starts = [p[0].get_extents().x0 for p in contained]
+                ends   = [p[0].get_extents().x1 for p in contained]
                 t_start, t_end = min(starts), max(ends)
-
-                # Remove all the old patches
-                for p in patches_to_merge:
+        
+                # 3) 删除所有子 ROI 和那个“临时容器”ROI
+                for p in contained:
                     self.remove_patch(p)
-                
-                # Create a single new patch representing the merged region
+                self.remove_patch(self.hovered_patch)
+        
+                # 4) 画一个新的、跨越这段区间的 ROI
                 new_sig = self.ax_signal.axvspan(t_start, t_end,
                                                 color=self.ROI_COLOR,
                                                 alpha=0.5, zorder=10)
@@ -573,11 +572,17 @@ class PlotEngine(FigureCanvas):
                                                 color=self.ROI_COLOR,
                                                 alpha=0.5, zorder=10)
                 self.burst_patches.append((new_sig, new_spec))
-                self.fig.canvas.draw()
-
+        
+                # 5) 更新用于 CSV 的事件列表
+                self.last_detected_events = [
+                    (p.get_extents().x0, p.get_extents().x1)
+                    for p, _ in self.burst_patches
+                ]
+        
+                # 6) 重置状态并重绘
                 self.hovered_patch = None
-
-            return
+                self.fig.canvas.draw()
+                return
 
         if event.button == 1:
             self.is_adding = True
@@ -598,13 +603,16 @@ class PlotEngine(FigureCanvas):
             self.adding_patch[1].remove()
 
         start_x, end_x = self.press_x, xdata
-        min_width = (self.last_t[1] - self.last_t[0]) if len(self.last_t) > 1 else 0.01
+        if hasattr(self, 'last_raw_t') and len(self.last_raw_t)>1:
+           min_width = self.last_raw_t[1] - self.last_raw_t[0]
+        else:
+           min_width = 1.0 / self.last_fs if self.last_fs else 0.01
 
         if abs(start_x - end_x) >= min_width:
             final_sig = self.ax_signal.axvspan(start_x, end_x, color=self.ROI_COLOR, alpha=0.5, zorder=10)
             final_spec = self.ax_spec.axvspan(start_x, end_x, color=self.ROI_COLOR, alpha=0.5, zorder=10)
             self.burst_patches.append((final_sig, final_spec))
-
+            self.last_detected_events.append((min(start_x, end_x), max(start_x, end_x)))
         self.is_adding = self.adding_patch = self.press_x = None
         self.fig.canvas.draw()
 

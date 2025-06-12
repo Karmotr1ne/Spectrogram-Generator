@@ -42,7 +42,10 @@ class ExportManager:
                 time_pairs = list(plot_engine.last_detected_events)
             else:
                 # fallback
-                time_pairs = []
+                time_pairs = [
+                    (p.get_extents().x0, p.get_extents().x1)
+                    for p in plot_engine.burst_patches
+                ]
                 for sig_patch, _ in plot_engine.burst_patches:
                     ext = sig_patch.get_extents()
                     time_pairs.append((min(ext.x0, ext.x1), max(ext.x0, ext.x1)))
