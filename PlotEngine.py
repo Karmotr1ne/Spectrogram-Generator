@@ -241,8 +241,10 @@ class PlotEngine(FigureCanvas):
         # --- Loop through each manually drawn region (ROI) ---
         for i, patch_pair in enumerate(self.burst_patches):
             bbox = patch_pair[0].get_extents()
-            roi_start_t, roi_end_t = min(bbox.x0, bbox.x1), max(bbox.x0, bbox.x1)
-
+            idx0 = int(np.clip(round(min(bbox.x0, bbox.x1)), 0, len(self.last_t)-1))
+            idx1 = int(np.clip(round(max(bbox.x0, bbox.x1)), 0, len(self.last_t)-1))
+            roi_start_t = self.last_t[idx0]
+            roi_end_t   = self.last_t[idx1]
             print(f"\n[DEBUG] Processing ROI #{i+1}: Time range = {roi_start_t:.4f}s to {roi_end_t:.4f}s")
 
             # Find the indices of the feature array that fall within this time range
