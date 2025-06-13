@@ -212,37 +212,33 @@ class PlotEngine(FigureCanvas):
         return t, np.column_stack([log_power, delta_log_power])
 
     def learn_and_detect(self):
-        t, features = self._calculate_features(self.spec_data_source)
-        print("=== DEBUG ROI time ranges and indices ===")
-        for i, (sig_patch, _) in enumerate(self.burst_patches):
-            bbox = sig_patch.get_extents()
-            start_t, end_t = bbox.x0, bbox.x1
-            idx_start = np.searchsorted(t, start_t)
-            idx_end   = np.searchsorted(t, end_t)
-            print(f"ROI #{i+1}: time [{start_t:.3f}, {end_t:.3f}] s → indices [{idx_start}, {idx_end}]")
-        print("t range:", t[0], "~", t[-1], "step", t[1]-t[0])
-        
-        if self.spec_data_source is None: raise ValueError("Please plot a spectrogram before learning.")
-        if not self.burst_patches: raise ValueError("No manual regions provided to learn from.")
-        
-        print("\n--- [DEBUG] Starting learn_and_detect ---")
-        
+        if self.spec_data_source is None:
+            raise ValueError("Please plot a spectrogram before learning.")
+        if not self.burst_patches:
+            raise ValueError("No manual regions provided to learn from.")
+
         t, features = self._calculate_features(self.spec_data_source, self.last_fs, self.last_settings)
-        if t is None: 
+        if t is None:
             print("[DEBUG] Feature calculation returned None. Aborting.")
             return []
-
+        
+        print("--- [DEBUG] Starting learn_and_detect ---")
         print(f"[DEBUG] Total time points in spectrogram: {len(t)}")
         print(f"[DEBUG] Total features shape: {features.shape}")
 
         precise_bursts_t = []
-        # --- Loop through each manually drawn region (ROI) ---
+        # Loop through each manually drawn region (ROI)
         for i, patch_pair in enumerate(self.burst_patches):
-            bbox = patch_pair[0].get_extents()
-            idx0 = int(np.clip(round(min(bbox.x0, bbox.x1)), 0, len(self.last_t)-1))
-            idx1 = int(np.clip(round(max(bbox.x0, bbox.x1)), 0, len(self.last_t)-1))
-            roi_start_t = self.last_t[idx0]
-            roi_end_t   = self.last_t[idx1]
+            # Directly get the precise time data that we bound to the patch object.
+            # This avoids all the problems with get_extents() and coordinate matching.
+            try:
+                roi_start_t, roi_end_t = patch_pair[0].event_data
+            except AttributeError:
+                # Add a fallback for safety, in case some patches were created with old code.
+                print("WARNING: Patch is missing 'event_data'. Falling back to get_extents().")
+                bbox = patch_pair[0].get_extents()
+                roi_start_t, roi_end_t = bbox.x0, bbox.x1
+            
             print(f"\n[DEBUG] Processing ROI #{i+1}: Time range = {roi_start_t:.4f}s to {roi_end_t:.4f}s")
 
             # Find the indices of the feature array that fall within this time range
@@ -250,8 +246,8 @@ class PlotEngine(FigureCanvas):
             
             print(f"[DEBUG] Number of time points found in this ROI: {len(roi_indices)}")
 
-            if len(roi_indices) < 2: # A single point has zero variance, let's check for this
-                print("[DEBUG] WARNING: ROI contains fewer than 2 data points. Skipping this ROI as it cannot be learned from.")
+            if len(roi_indices) < 2:
+                print("[DEBUG] WARNING: ROI contains fewer than 2 data points. Skipping this ROI.")
                 continue
 
             # This is the actual data subset for the HMM
@@ -260,24 +256,16 @@ class PlotEngine(FigureCanvas):
             
             print(f"[DEBUG] Shape of features for this ROI: {roi_features.shape}")
             
-            # Let's check the variance directly before sending to HMM
-            # This is the most critical check
             feature_variances = np.var(roi_features, axis=0)
             print(f"[DEBUG] Variance of features for this ROI: {feature_variances}")
-
-            if np.any(feature_variances <= 0):
-                print("[DEBUG] ERROR: Found zero or negative variance in features BEFORE HMM.")
-                # You can print the problematic features to inspect them
-                # print("[DEBUG] Features with zero variance:\n", roi_features)
-
             
             # Pass the 'warnings' module to the function call
             precise_times = self._find_burst_in_roi(roi_features, roi_time_subset, warnings)
-            if precise_times: 
+            if precise_times:
                 print(f"[DEBUG] HMM found a burst in this ROI: {precise_times}")
                 precise_bursts_t.append(precise_times)
         
-        if not precise_bursts_t: 
+        if not precise_bursts_t:
             raise ValueError("Could not identify a clear burst in any of the provided regions.")
             
         labels = np.zeros(len(t), dtype=int)
@@ -543,45 +531,46 @@ class PlotEngine(FigureCanvas):
                 self.hovered_patch = None
 
             elif chosen == merge_action:
-                container_ext = self.hovered_patch[0].get_extents()
-                contained = [
+
+                # 1. Identify the container and contained patches. (No change here)
+                container_patch_pair = self.hovered_patch
+                container_ext = container_patch_pair[0].get_extents()
+
+                contained_patches = [
                     p for p in self.burst_patches
-                    if p is not self.hovered_patch
+                    if p is not container_patch_pair
                     and p[0].get_extents().x0 >= container_ext.x0
                     and p[0].get_extents().x1 <= container_ext.x1
                 ]
-                # 如果没有子 ROI，就不做任何事
-                if not contained:
+
+                if not contained_patches:
                     return
-        
-                # 2) 用子 ROI 的最早 start / 最晚 end 计算新范围
-                starts = [p[0].get_extents().x0 for p in contained]
-                ends   = [p[0].get_extents().x1 for p in contained]
-                t_start, t_end = min(starts), max(ends)
-        
-                # 3) 删除所有子 ROI 和那个“临时容器”ROI
-                for p in contained:
-                    self.remove_patch(p)
-                self.remove_patch(self.hovered_patch)
-        
-                # 4) 画一个新的、跨越这段区间的 ROI
-                new_sig = self.ax_signal.axvspan(t_start, t_end,
-                                                color=self.ROI_COLOR,
-                                                alpha=0.5, zorder=10)
-                new_spec = self.ax_spec.axvspan(t_start, t_end,
-                                                color=self.ROI_COLOR,
-                                                alpha=0.5, zorder=10)
-                self.burst_patches.append((new_sig, new_spec))
-        
-                # 5) 更新用于 CSV 的事件列表
-                self.last_detected_events = [
-                    (p.get_extents().x0, p.get_extents().x1)
-                    for p, _ in self.burst_patches
-                ]
-        
-                # 6) 重置状态并重绘
+
+                # 2. Retrieve event data directly from the patches. THIS IS THE KEY.
+                # No more coordinate matching.
+                patches_to_process = contained_patches + [container_patch_pair]
+                events_to_remove = [p[0].event_data for p in patches_to_process]
+
+                # 3. Calculate the new merged event from the contained patches' data.
+                contained_events_data = [p[0].event_data for p in contained_patches]
+                starts = [event[0] for event in contained_events_data]
+                ends = [event[1] for event in contained_events_data]
+                new_event = (min(starts), max(ends))
+
+                # 4. Create the final, correct list of events.
+                events_to_remove_set = set(events_to_remove)
+                updated_events = [event for event in self.last_detected_events if event not in events_to_remove_set]
+                updated_events.append(new_event)
+
+                # 5. Use the correct data to drive the view update.
+                self.last_detected_events = sorted(updated_events)
+                self.plot_detection_lines(self.last_detected_events)
+
+                # 6. Clean up state.
                 self.hovered_patch = None
+                # The final draw is handled by plot_detection_lines, but an extra one here ensures GUI responsiveness.
                 self.fig.canvas.draw()
+
                 return
 
         if event.button == 1:
@@ -609,10 +598,17 @@ class PlotEngine(FigureCanvas):
            min_width = 1.0 / self.last_fs if self.last_fs else 0.01
 
         if abs(start_x - end_x) >= min_width:
-            final_sig = self.ax_signal.axvspan(start_x, end_x, color=self.ROI_COLOR, alpha=0.5, zorder=10)
-            final_spec = self.ax_spec.axvspan(start_x, end_x, color=self.ROI_COLOR, alpha=0.5, zorder=10)
+            event_data = (min(start_x, end_x), max(start_x, end_x))
+            final_sig = self.ax_signal.axvspan(event_data[0], event_data[1], color=self.ROI_COLOR, alpha=0.5, zorder=10)
+            final_spec = self.ax_spec.axvspan(event_data[0], event_data[1], color=self.ROI_COLOR, alpha=0.5, zorder=10)
+
+            # Bind the data directly to the patch object
+            final_sig.event_data = event_data
+            final_spec.event_data = event_data
+
             self.burst_patches.append((final_sig, final_spec))
-            self.last_detected_events.append((min(start_x, end_x), max(start_x, end_x)))
+            self.last_detected_events.append(event_data)
+
         self.is_adding = self.adding_patch = self.press_x = None
         self.fig.canvas.draw()
 
@@ -629,5 +625,11 @@ class PlotEngine(FigureCanvas):
         for tr, tf in event_pairs:
             patch_sig = self.ax_signal.axvspan(tr, tf, color=self.ROI_COLOR, alpha=0.5, zorder=10)
             patch_spec = self.ax_spec.axvspan(tr, tf, color=self.ROI_COLOR, alpha=0.5, zorder=10)
+
+            # Bind the data directly to the patch object
+            event_data = (tr, tf)
+            patch_sig.event_data = event_data
+            patch_spec.event_data = event_data
+
             self.burst_patches.append((patch_sig, patch_spec))
         self.fig.canvas.draw() 
