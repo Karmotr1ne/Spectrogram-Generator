@@ -140,8 +140,10 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         export_layout = QHBoxLayout(export_group)
         self.btn_export_pdf = QtWidgets.QPushButton("Export PDF")
         self.btn_export_csv = QtWidgets.QPushButton("Export CSV")
+        self.btn_band_power = QtWidgets.QPushButton("Calculate Band Power")
         export_layout.addWidget(self.btn_export_pdf)
         export_layout.addWidget(self.btn_export_csv)
+        export_layout.addWidget(self.btn_band_power)
         left_layout.addWidget(export_group)
 
         left_layout.addStretch()
@@ -177,6 +179,7 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
 
         self.btn_export_pdf.clicked.connect(self.export_pdf)
         self.btn_export_csv.clicked.connect(self.export_csv)
+        self.btn_band_power.clicked.connect(self.on_band_power_clicked)
 
     def load_settings(self):
         self.settings = QtCore.QSettings("MyCompany", "SpectrogramGenerator")
@@ -471,6 +474,47 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         status = self.exporter.export_to_csv(filepath=filepath, plot_engine=self.canvas)
         self.status_label.setText(status)
 
+    def on_band_power_clicked(self):
+        if self.canvas.last_Sxx is None:
+            QtWidgets.QMessageBox.warning(self, "No Spectrogram",
+                                        "Please plot a signal with a spectrogram first.")
+            return
+
+        if self.chk_log.isChecked():
+            QtWidgets.QMessageBox.warning(
+                self, "Band Power Disabled in Log Scale",
+                "Please disable log scale before calculating band power.\n\n"
+                "Band power must be calculated from the original (linear) spectrum."
+            )
+            return
+
+        band_powers = self.canvas.calculate_band_powers()
+        if band_powers is None:
+            QtWidgets.QMessageBox.warning(self, "Error", "Unable to compute band power.")
+            return
+
+        msg = ""
+        for band, power in band_powers.items():
+            msg += f"{band}: {power:.4e}\n"
+
+        # Show a dialog with selectable and copyable text
+        text_dialog = QtWidgets.QDialog(self)
+        text_dialog.setWindowTitle("Band Power Results")
+        layout = QtWidgets.QVBoxLayout(text_dialog)
+        label = QtWidgets.QLabel("Power per frequency band (arbitrary units):")
+        layout.addWidget(label)
+        
+        text_box = QtWidgets.QTextEdit()
+        text_box.setReadOnly(True)
+        text_box.setText(msg)
+        layout.addWidget(text_box)
+
+        btn_close = QtWidgets.QPushButton("Close")
+        btn_close.clicked.connect(text_dialog.accept)
+        layout.addWidget(btn_close)
+
+        text_dialog.resize(400, 300)
+        text_dialog.exec_()
 
 if __name__ == "__main__":
     QtWidgets.QApplication.setHighDpiScaleFactorRoundingPolicy(

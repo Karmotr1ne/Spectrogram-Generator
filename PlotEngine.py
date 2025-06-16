@@ -659,3 +659,30 @@ class PlotEngine(FigureCanvas):
             return None
         total_power = np.sum(self.last_Sxx) 
         return total_power
+    
+    def calculate_band_powers(self, bands=None):
+        if self.last_Sxx is None or self.last_f is None:
+            return None
+        
+        if bands is None:
+            bands = {
+                'Delta (δ)': (0, 4),
+                'Theta (θ)': (4, 8),
+                'Alpha (α)': (8, 13),
+                'Beta (β)': (13, 30),
+                'Gamma (γ)': (30, 80),
+                'HFO (ripples)': (80, 250)
+            }
+
+        total_power = np.sum(self.last_Sxx)
+        if total_power == 0:
+            return {name: 0.0 for name in bands}
+
+        power_dict = {}
+        for name, (low, high) in bands.items():
+            mask = (self.last_f >= low) & (self.last_f < high)
+            band_power = np.sum(self.last_Sxx[mask, :])
+            rel_power = band_power / total_power
+            power_dict[name] = rel_power
+
+        return power_dict
