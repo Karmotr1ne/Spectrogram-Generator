@@ -387,6 +387,11 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         if was_editing: self.canvas.set_editing_enabled(True)
         self.canvas.draw()
 
+        # Step 7: Absolute power
+        absolute_power = self.canvas.calculate_absolute_power()
+        if absolute_power is not None:
+            self.status_label.setText(self.status_label.text() + f" | Total Power: {absolute_power:.2e}")
+
     def on_detect_clicked(self):
         if self.canvas.spec_data_source is None:
             QtWidgets.QMessageBox.warning(self, "Action Required", "Please plot a signal before running detection.")

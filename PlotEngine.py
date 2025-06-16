@@ -633,3 +633,9 @@ class PlotEngine(FigureCanvas):
 
             self.burst_patches.append((patch_sig, patch_spec))
         self.fig.canvas.draw() 
+
+    def calculate_absolute_power(self):
+        if self.last_Sxx is None:
+            return None
+        total_power = np.sum(self.last_Sxx) 
+        return total_power
