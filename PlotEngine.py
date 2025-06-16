@@ -291,8 +291,9 @@ class PlotEngine(FigureCanvas):
         if in_event: events.append((start_time, t[-1]))
 
         print("--- [DEBUG] Finished learn_and_detect ---")
-        self.last_detected_events = events
-        return events
+        merged_events = self._merge_overlapping_events(events)
+        self.last_detected_events = merged_events
+        return merged_events
     
     def _train_supervised(self, features, labels):
         n_states = self.model.n_components
@@ -437,8 +438,9 @@ class PlotEngine(FigureCanvas):
         # If the signal ends while an event is active, close the event at the very last time point.
         if in_event:
             events.append((start_time, t[-1]))
-        self.last_detected_events = events
-        return events
+        merged_events = self._merge_overlapping_events(events)
+        self.last_detected_events = merged_events
+        return merged_events
 
     def reset_model(self):
         """Resets the HMM to its initial, untrained state."""
@@ -633,6 +635,24 @@ class PlotEngine(FigureCanvas):
 
             self.burst_patches.append((patch_sig, patch_spec))
         self.fig.canvas.draw() 
+    
+    def _merge_overlapping_events(self, events, tolerance=1e-6):
+        if not events:
+            return []
+
+        events_sorted = sorted(events, key=lambda x: x[0])
+        merged = [events_sorted[0]]
+
+        for current_start, current_end in events_sorted[1:]:
+            last_start, last_end = merged[-1]
+
+            if current_start <= last_end + tolerance:
+                merged[-1] = (last_start, max(last_end, current_end))
+            else:
+                merged.append((current_start, current_end))
+
+        return merged
+
 
     def calculate_absolute_power(self):
         if self.last_Sxx is None:
