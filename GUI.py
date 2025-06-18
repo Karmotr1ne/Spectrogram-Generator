@@ -495,7 +495,8 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
 
         msg = ""
         for band, power in band_powers.items():
-            msg += f"{band}: {power:.4f}\n"
+            for power in band_powers.values():
+                msg += f"{100 * power:.4f}\n"
 
         # Show a dialog with selectable and copyable text
         text_dialog = QtWidgets.QDialog(self)
