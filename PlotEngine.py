@@ -31,10 +31,10 @@ class PlotEngine(FigureCanvas):
         self.editing_enabled = False
         self.burst_patches = []
         
-        # Colors for ROI states
+        # Colors
         self.ROI_COLOR = 'blue'
         self.HOVER_COLOR = 'red'
-        
+
         # State variables for the new logic
         self.hovered_patch = None  # Stores the patch currently under the mouse
         self.is_adding = False     # True when drawing a new patch
@@ -130,7 +130,10 @@ class PlotEngine(FigureCanvas):
             min_db, max_db = np.min(Sxx_db), np.max(Sxx_db)
             Sxx_norm = (Sxx_db - min_db) / (max_db - min_db) if (max_db - min_db) > 1e-6 else np.zeros_like(Sxx_db)
             
-        pcm = self.ax_spec.pcolormesh(t, f, Sxx_norm, shading='auto', cmap='jet', vmin=0.0, vmax=1.0, zorder=0)
+        
+        pcm = self.ax_spec.pcolormesh(t, f, Sxx_norm, shading='auto',
+                               cmap= 'jet', vmin=0.0, vmax=1.0, zorder=0)
+
         self.ax_spec.set_ylabel("Frequency (Hz)"); self.ax_spec.set_xlabel("Time (s)")
         self.fig.colorbar(pcm, ax=self.ax_spec, orientation='vertical', label="Normalized Power")
         if hasattr(self, 'last_raw_t') and len(self.last_raw_t) > 1:
@@ -663,7 +666,9 @@ class PlotEngine(FigureCanvas):
     def calculate_band_powers(self, bands=None):
         if self.last_Sxx is None or self.last_f is None:
             return None
-        
+
+        Sxx_linear = np.maximum(0, self.last_Sxx) 
+
         if bands is None:
             bands = {
                 'Delta (δ)': (0, 4),
@@ -674,15 +679,17 @@ class PlotEngine(FigureCanvas):
                 'HFO (ripples)': (80, 250)
             }
 
-        total_power = np.sum(self.last_Sxx)
-        if total_power == 0:
+        total_power = np.sum(Sxx_linear)
+
+        if total_power < 1e-18:
             return {name: 0.0 for name in bands}
 
         power_dict = {}
         for name, (low, high) in bands.items():
             mask = (self.last_f >= low) & (self.last_f < high)
-            band_power = np.sum(self.last_Sxx[mask, :])
-            rel_power = band_power / total_power
+            band_power = np.sum(Sxx_linear[mask, :])
+
+            rel_power = np.clip(band_power / total_power, 0.0, None) 
             power_dict[name] = rel_power
 
         return power_dict
