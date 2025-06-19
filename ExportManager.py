@@ -1,27 +1,14 @@
 import csv
 import re, os
 import numpy as np
+import matplotlib 
+matplotlib.use("Agg")  # Use non-GUI backend
+import matplotlib.pyplot as plt
+from pathlib import Path
 from PyQt5 import QtWidgets, QtCore
 from PyQt5.QtWidgets import QFileDialog
 
 class ExportManager:
-
-    def export_to_pdf(self, figure, parent_widget=None):
-        if not figure.axes or not figure.axes[0].has_data():
-            return "Cannot export: The plot is empty."
-        
-        filepath, _ = QFileDialog.getSaveFileName(
-            parent_widget, "Save Figure as PDF", "", "PDF Files (*.pdf)"
-        )
-
-        if not filepath:
-            return "Export cancelled."
-
-        try:
-            figure.savefig(filepath, format='pdf', bbox_inches='tight')
-            return f"Successfully exported to {filepath}"
-        except Exception as e:
-            return f"Error exporting to PDF: {e}"
 
     def export_to_csv(self, filepath, plot_engine):
         """
@@ -102,9 +89,9 @@ class ExportManager:
         except Exception as e:
             return f"Error exporting to CSV: {e}"
 
-    def export_to_png_transparent(self, figure, parent_widget=None):
-        if not figure.axes or not figure.axes[0].has_data():
-            return "Cannot export: The plot is empty."
+    def export_to_png_transparent(self, plot_engine, parent_widget=None):
+        plot_engine.draw()
+        fig = plot_engine.fig
 
         filepath, _ = QFileDialog.getSaveFileName(
             parent_widget, "Save Figure as Transparent PNG", "", "PNG Files (*.png)"
@@ -114,7 +101,91 @@ class ExportManager:
             return "Export cancelled."
 
         try:
-            figure.savefig(filepath, format='png', dpi=3000, transparent=True, bbox_inches='tight')
+            for ax in fig.axes:
+                legend = ax.get_legend()
+                if legend: legend.remove()
+
+            fig.savefig(filepath, format='png', dpi=3000, transparent=True, bbox_inches='tight')
             return f"Successfully exported transparent PNG to {filepath}"
         except Exception as e:
             return f"Error exporting PNG: {e}"
+        
+    def export_batch_signals_to_png(self, plot_engine, sweep_manager, selected_items, parent_widget=None):
+
+        if not selected_items:
+            return "No items selected for batch export."
+
+        # Ask user to select output folder
+        out_dir = QFileDialog.getExistingDirectory(parent_widget, "Select Folder to Save PNGs")
+        if not out_dir:
+            return "Export cancelled."
+
+        success_list = []
+        
+        # inside export_batch_signals_to_png
+        max_amplitude = 0
+
+        for item in selected_items:
+            name = item.data(0, QtCore.Qt.UserRole)
+            entry = sweep_manager.data.get(name, {})
+
+            use_proc = getattr(parent_widget.chk_processed, 'isChecked', lambda: False)()
+            use_raw  = getattr(parent_widget.chk_original, 'isChecked', lambda: False)()
+
+            sigs = []
+            if use_proc and entry.get("processed") is not None:
+                sigs.append(entry["processed"])
+            if use_raw and entry.get("raw") is not None:
+                sigs.append(entry["raw"])
+
+            for sig in sigs:
+                max_amp = np.max(np.abs(sig))
+                if max_amp > max_amplitude:
+                    max_amplitude = max_amp
+
+        for item in selected_items:
+            name = item.data(0, QtCore.Qt.UserRole)
+            if name not in sweep_manager.data:
+                continue
+
+            entry = sweep_manager.data[name]
+            is_combined = name.startswith("combine")
+
+            use_proc = getattr(parent_widget.chk_processed, 'isChecked', lambda: False)()
+            use_raw  = getattr(parent_widget.chk_original, 'isChecked', lambda: False)()
+
+            sig = None
+            fs = None
+            if use_proc and entry.get("processed") is not None:
+                sig = entry["processed"]
+                fs = entry["fs"]
+            elif use_raw and entry.get("raw") is not None:
+                sig = entry["raw"]
+                fs = entry["fs_raw"]
+            else:
+                continue
+
+            if sig is None or fs is None:
+                continue
+
+            # Plot & export
+            fig = plt.figure(figsize=(8, 4))
+            ax = fig.add_subplot(111)
+            t = np.arange(len(sig)) / fs
+            ax.plot(t, sig, color='black', linewidth=0.5)
+            ax.set_xlabel("Time (s)")
+            ax.set_ylabel("Amplitude")
+            ax.set_xlim(0, 300)
+            ax.set_ylim(-max_amplitude, max_amplitude)
+
+            safe_name = re.sub(r'[\\/:"*?<>|]+', '_', name)
+            save_path = str(Path(out_dir) / f"{safe_name}.png")
+
+            fig.savefig(save_path, format='png', dpi=3000, transparent=True, bbox_inches='tight')
+            plt.close(fig)
+
+            success_list.append(name)
+
+        return f"Exported {len(success_list)} signal PNGs to {out_dir}"
+
+

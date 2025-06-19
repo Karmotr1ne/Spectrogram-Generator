@@ -148,9 +148,12 @@ class PlotEngine(FigureCanvas):
         """
         High-level plotting method that handles signal combination and segment map creation.
         """
+
         self.clear() # Start fresh
         self.currently_plotted_items = [info['item'] for info in sweeps_info]
-
+        raw_segments = []
+        proc_segments = []
+        fs_list = []
         combine = settings.get("combine", False)
         fs0 = sweeps_info[0]['fs'] if sweeps_info else 0
 
@@ -164,8 +167,16 @@ class PlotEngine(FigureCanvas):
             use_proc = settings.get("draw_proc", True)
 
             for info in sweeps_info:
-                signal_to_use = info['signal_proc'] if use_proc and info['signal_proc'] is not None else info['signal_raw']
+                # Always store both raw and processed (or fallback) for later export
+                sig_raw = info['signal_raw']
+                sig_proc = info['signal_proc'] if info['signal_proc'] is not None else info['signal_raw']
 
+                raw_segments.append(sig_raw)
+                proc_segments.append(sig_proc)
+                fs_list.append(info['fs'])
+
+                signal_to_use = sig_proc if use_proc else sig_raw
+                
                 if signal_to_use is None:
                     continue
 
@@ -198,6 +209,22 @@ class PlotEngine(FigureCanvas):
         self.plot_extra(
             signal_raw=sig_raw_plot, signal_proc=sig_proc_plot, fs=fs0, settings=settings
         )
+        self.combined_raw = np.concatenate(raw_segments) if raw_segments else None
+        self.combined_proc = np.concatenate(proc_segments) if proc_segments else None
+
+    def plot_single_signal(self, name, signal, fs, use_log=False):
+        """
+        Draws a single time-domain signal with labeled axes. Used for batch export.
+        """
+        self.clear()
+        ax = self.fig.add_subplot(111)
+        t = np.arange(len(signal)) / fs
+        ax.plot(t, signal)
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Amplitude")
+        if use_log:
+            ax.set_yscale('log')
+        self.draw()
 
     def _calculate_features(self, signal, fs=None, settings=None):
         fs       = fs or self.last_fs

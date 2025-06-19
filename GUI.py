@@ -73,9 +73,10 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         other_display_layout = QHBoxLayout()
         self.chk_combine = QtWidgets.QCheckBox("Combine all sweeps")
         self.chk_log = QtWidgets.QCheckBox("Log Scale")
+        self.btn_combine_to_tree = QtWidgets.QPushButton("Add Combined")
         other_display_layout.addWidget(self.chk_combine)
-        other_display_layout.addStretch()
         other_display_layout.addWidget(self.chk_log)
+        other_display_layout.addWidget(self.btn_combine_to_tree)
         display_v_layout.addLayout(other_display_layout)
         left_layout.addWidget(display_group)
 
@@ -138,15 +139,14 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         # Group 6: Export
         export_group = QGroupBox("Export")
         export_layout = QHBoxLayout(export_group)
-        self.btn_export_png = QtWidgets.QPushButton("Wave")
-        self.btn_export_pdf = QtWidgets.QPushButton("Spectrograme")
-        self.btn_export_csv = QtWidgets.QPushButton("Burst")
-
-        self.btn_band_power = QtWidgets.QPushButton("Band Power")
-        export_layout.addWidget(self.btn_export_pdf)
+        self.btn_export_png = QtWidgets.QPushButton("PNG")
+        self.btn_export_batch = QtWidgets.QPushButton("Batch Export Signals")
+        self.btn_export_csv = QtWidgets.QPushButton("Burst CSV")
+        self.btn_band_power = QtWidgets.QPushButton("Cal Power")
+        export_layout.addWidget(self.btn_export_png)
+        export_layout.addWidget(self.btn_export_batch)
         export_layout.addWidget(self.btn_export_csv)
         export_layout.addWidget(self.btn_band_power)
-        export_layout.addWidget(self.btn_export_png)
         left_layout.addWidget(export_group)
 
         left_layout.addStretch()
@@ -172,7 +172,8 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         self.btn_remove.clicked.connect(self.remove_selected)
         self.file_tree.customContextMenuRequested.connect(self.open_context_menu)
         self.file_tree.itemClicked.connect(self.on_tree_item_clicked)
-        
+        self.btn_combine_to_tree.clicked.connect(self.on_add_combined_entry)
+
         self.btn_plot.clicked.connect(self.plot_selected)
         self.btn_detect.clicked.connect(self.on_detect_clicked)
         self.chk_enable_editing.toggled.connect(self.on_editing_mode_changed)
@@ -181,7 +182,7 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         self.btn_learn_and_detect.clicked.connect(self.on_learn_and_detect_clicked)
 
         self.btn_export_png.clicked.connect(self.export_png_transparent)
-        self.btn_export_pdf.clicked.connect(self.export_pdf)
+        self.btn_export_batch.clicked.connect(self.export_batch_signals)
         self.btn_export_csv.clicked.connect(self.export_csv)
         self.btn_band_power.clicked.connect(self.on_band_power_clicked)
 
@@ -222,7 +223,58 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         self.chk_log.setChecked(self.settings.value("logScale", False, type=bool))
         self.chk_log.toggled.connect(lambda v: self.settings.setValue("logScale", v))
 
-    
+    def on_add_combined_entry(self):
+        selected_items = self.file_tree.selectedItems()
+        if len(selected_items) < 2:
+            QtWidgets.QMessageBox.warning(self, "Need More Sweeps", "Please select at least two sweeps to combine.")
+            return
+
+        sweeps_info = []
+        fs_set = set()
+
+        for item in selected_items:
+            name = item.data(0, QtCore.Qt.UserRole)
+            fs = self.manager.data[name]['fs']
+            fs_set.add(fs)
+            sig_raw, _ = self.manager.get_signal(name, processed=False)
+            sig_proc, _ = self.manager.get_signal(name, processed=True)
+            sweeps_info.append({'name': name, 'signal_raw': sig_raw, 'signal_proc': sig_proc, 'fs': fs})
+
+        if len(fs_set) > 1:
+            QtWidgets.QMessageBox.critical(self, "Sampling Rate Mismatch", "All selected signals must have the same sampling rate.")
+            return
+
+        fs = fs_set.pop()
+        combined_raw = [s['signal_raw'] for s in sweeps_info if s['signal_raw'] is not None]
+        combined_proc = [s['signal_proc'] for s in sweeps_info if s['signal_proc'] is not None]
+
+        # max amp = Y
+        amplitude = max(np.max(np.abs(sig)) for sig in combined_raw + combined_proc)
+
+        # name
+        counter = 0
+        while f"combine{counter}" in self.manager.data:
+            counter += 1
+        new_name = f"combine{counter}"
+
+        self.manager.data[new_name] = {
+            "filepath": "Combined",
+            "sweep_idx": -1,
+            "fs": fs,
+            "fs_raw": fs,
+            "raw": np.concatenate(combined_raw) if combined_raw else None,
+            "processed": np.concatenate(combined_proc) if combined_proc else None
+        }
+
+        item = QtWidgets.QTreeWidgetItem([new_name])
+        item.setData(0, QtCore.Qt.UserRole, new_name)
+        self.file_tree.addTopLevelItem(item)
+
+        QtWidgets.QMessageBox.information(self, "Combine Complete", f"Combined signal added as {new_name}.")
+
+        self.status_label.setText(f"Status: Added combined signal {new_name} (max amplitude: {amplitude:.2f})")
+
+
     def on_refine_model_clicked(self):
         if not self.canvas.burst_patches:
             QtWidgets.QMessageBox.warning(self, "Action Required",
@@ -440,11 +492,6 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         if action == remove_action: self.remove_selected()
         elif action == clear_action: self.clear_all()
         elif action == select_all_action: self.file_tree.selectAll()
-            
-    def export_pdf(self):
-        """Exports the current plot to a PDF file."""
-        status = self.exporter.export_to_pdf(self.canvas.fig, self)
-        self.status_label.setText(status)
 
     def export_csv(self):
         """Handles exporting burst data using the plot context stored in the canvas."""
@@ -527,8 +574,21 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
                                             "Please plot a signal first before exporting.")
             return
 
-        status = self.exporter.export_to_png_transparent(self.canvas.fig, self)
+        status = self.exporter.export_to_png_transparent(self.canvas, self)
         self.status_label.setText(status)
+
+    def export_batch_signals(self):
+        selected_items = self.file_tree.selectedItems()
+        if not selected_items:
+            QtWidgets.QMessageBox.warning(self, "No Selection", "Please select one or more items to export.")
+            return
+
+        status = self.exporter.export_batch_signals_to_png(
+            self.canvas, self.manager, selected_items, self
+        )
+        self.status_label.setText(status)
+
+
 
 if __name__ == "__main__":
     QtWidgets.QApplication.setHighDpiScaleFactorRoundingPolicy(
