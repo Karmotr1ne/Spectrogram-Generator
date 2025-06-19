@@ -101,3 +101,20 @@ class ExportManager:
             return f"Successfully exported {len(output_rows)} events to {os.path.basename(filepath)}"
         except Exception as e:
             return f"Error exporting to CSV: {e}"
+
+    def export_to_png_transparent(self, figure, parent_widget=None):
+        if not figure.axes or not figure.axes[0].has_data():
+            return "Cannot export: The plot is empty."
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            parent_widget, "Save Figure as Transparent PNG", "", "PNG Files (*.png)"
+        )
+
+        if not filepath:
+            return "Export cancelled."
+
+        try:
+            figure.savefig(filepath, format='png', dpi=3000, transparent=True, bbox_inches='tight')
+            return f"Successfully exported transparent PNG to {filepath}"
+        except Exception as e:
+            return f"Error exporting PNG: {e}"

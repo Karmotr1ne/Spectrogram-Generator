@@ -656,7 +656,6 @@ class PlotEngine(FigureCanvas):
 
         return merged
 
-
     def calculate_absolute_power(self):
         if self.last_Sxx is None:
             return None

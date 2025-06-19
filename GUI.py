@@ -138,12 +138,15 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         # Group 6: Export
         export_group = QGroupBox("Export")
         export_layout = QHBoxLayout(export_group)
-        self.btn_export_pdf = QtWidgets.QPushButton("Export PDF")
-        self.btn_export_csv = QtWidgets.QPushButton("Export CSV")
-        self.btn_band_power = QtWidgets.QPushButton("Calculate Band Power")
+        self.btn_export_png = QtWidgets.QPushButton("Wave")
+        self.btn_export_pdf = QtWidgets.QPushButton("Spectrograme")
+        self.btn_export_csv = QtWidgets.QPushButton("Burst")
+
+        self.btn_band_power = QtWidgets.QPushButton("Band Power")
         export_layout.addWidget(self.btn_export_pdf)
         export_layout.addWidget(self.btn_export_csv)
         export_layout.addWidget(self.btn_band_power)
+        export_layout.addWidget(self.btn_export_png)
         left_layout.addWidget(export_group)
 
         left_layout.addStretch()
@@ -177,9 +180,11 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         self.btn_refine_model.clicked.connect(self.on_refine_model_clicked)
         self.btn_learn_and_detect.clicked.connect(self.on_learn_and_detect_clicked)
 
+        self.btn_export_png.clicked.connect(self.export_png_transparent)
         self.btn_export_pdf.clicked.connect(self.export_pdf)
         self.btn_export_csv.clicked.connect(self.export_csv)
         self.btn_band_power.clicked.connect(self.on_band_power_clicked)
+
 
     def load_settings(self):
         self.settings = QtCore.QSettings("MyCompany", "SpectrogramGenerator")
@@ -515,6 +520,15 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
 
         text_dialog.resize(400, 300)
         text_dialog.exec_()
+
+    def export_png_transparent(self):
+        if not self.canvas.currently_plotted_items:
+            QtWidgets.QMessageBox.warning(self, "No Plot Context", 
+                                            "Please plot a signal first before exporting.")
+            return
+
+        status = self.exporter.export_to_png_transparent(self.canvas.fig, self)
+        self.status_label.setText(status)
 
 if __name__ == "__main__":
     QtWidgets.QApplication.setHighDpiScaleFactorRoundingPolicy(
