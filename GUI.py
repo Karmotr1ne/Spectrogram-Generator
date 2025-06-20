@@ -140,7 +140,7 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         export_group = QGroupBox("Export")
         export_layout = QHBoxLayout(export_group)
         self.btn_export_png = QtWidgets.QPushButton("PNG")
-        self.btn_export_batch = QtWidgets.QPushButton("Batch Export Signals")
+        self.btn_export_batch = QtWidgets.QPushButton("Batch")
         self.btn_export_csv = QtWidgets.QPushButton("Burst CSV")
         self.btn_band_power = QtWidgets.QPushButton("Cal Power")
         export_layout.addWidget(self.btn_export_png)
@@ -450,7 +450,7 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
         # Step 7: Absolute power
         absolute_power = self.canvas.calculate_absolute_power()
         if absolute_power is not None:
-            self.status_label.setText(self.status_label.text() + f" | Total Power: {absolute_power:.2e}")
+            self.status_label.setText(self.status_label.text() + f" | Total Power: {absolute_power:.6f}")
 
     def on_detect_clicked(self):
         if self.canvas.spec_data_source is None:
@@ -540,22 +540,19 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
             )
             return
 
-        band_powers = self.canvas.calculate_band_powers()
-        if band_powers is None:
-            QtWidgets.QMessageBox.warning(self, "Error", "Unable to compute band power.")
-            return
+        band_ratios = self.canvas.calculate_band_powers()
+        total_power = self.canvas.calculate_absolute_power()
 
-        msg = ""
-        for power in band_powers.values():
-            msg += f"{100 * power:.4f}\n"
+        if band_ratios is not None and total_power is not None:
+            msg = f"{total_power:.6f}\n"
+            for band, ratio in band_ratios.items():
+                msg += f"{100 * ratio:.2f}\n"
 
         # Show a dialog with selectable and copyable text
         text_dialog = QtWidgets.QDialog(self)
         text_dialog.setWindowTitle("Band Power Results")
         layout = QtWidgets.QVBoxLayout(text_dialog)
-        label = QtWidgets.QLabel("Power per frequency band (arbitrary units):")
-        layout.addWidget(label)
-        
+
         text_box = QtWidgets.QTextEdit()
         text_box.setReadOnly(True)
         text_box.setText(msg)
@@ -587,8 +584,6 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
             self.canvas, self.manager, selected_items, self
         )
         self.status_label.setText(status)
-
-
 
 if __name__ == "__main__":
     QtWidgets.QApplication.setHighDpiScaleFactorRoundingPolicy(

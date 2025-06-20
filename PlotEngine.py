@@ -61,7 +61,7 @@ class PlotEngine(FigureCanvas):
             return None
 
     def _create_axes(self):
-        gs = self.fig.add_gridspec(nrows=2, ncols=1, height_ratios=[1, 1]) # 不再有 hspace=0.0
+        gs = self.fig.add_gridspec(nrows=2, ncols=1, height_ratios=[1, 1]) 
         self.ax_signal = self.fig.add_subplot(gs[0, 0])
         self.ax_spec = self.fig.add_subplot(gs[1, 0], sharex=self.ax_signal)
         
@@ -693,7 +693,7 @@ class PlotEngine(FigureCanvas):
         if self.last_Sxx is None or self.last_f is None:
             return None
 
-        Sxx_linear = np.maximum(0, self.last_Sxx) 
+        Sxx_linear = np.maximum(0, self.last_Sxx)
 
         if bands is None:
             bands = {
@@ -706,7 +706,6 @@ class PlotEngine(FigureCanvas):
             }
 
         total_power = np.sum(Sxx_linear)
-
         if total_power < 1e-18:
             return {name: 0.0 for name in bands}
 
@@ -714,8 +713,8 @@ class PlotEngine(FigureCanvas):
         for name, (low, high) in bands.items():
             mask = (self.last_f >= low) & (self.last_f < high)
             band_power = np.sum(Sxx_linear[mask, :])
-
-            rel_power = np.clip(band_power / total_power, 0.0, None) 
+            rel_power = np.clip(band_power / total_power, 0.0, None)
             power_dict[name] = rel_power
 
         return power_dict
+
