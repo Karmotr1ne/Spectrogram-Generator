@@ -48,13 +48,10 @@ class PlotEngine(FigureCanvas):
         ax = event.inaxes
         if ax is None:
             return None
-
         if event.xdata is not None:
             return event.xdata
-
         try:
             inv = ax.transData.inverted()
-
             xdata, _ = inv.transform((event.x, event.y))
             return xdata
         except Exception:
@@ -693,7 +690,7 @@ class PlotEngine(FigureCanvas):
         if self.last_Sxx is None or self.last_f is None:
             return None
 
-        Sxx_linear = np.maximum(0, self.last_Sxx)
+        Sxx_linear = np.maximum(0, self.last_Sxx)  # Ensure non-negative power values
 
         if bands is None:
             bands = {
@@ -705,16 +702,24 @@ class PlotEngine(FigureCanvas):
                 'HFO (ripples)': (80, 250)
             }
 
-        total_power = np.sum(Sxx_linear)
-        if total_power < 1e-18:
-            return {name: 0.0 for name in bands}
-
-        power_dict = {}
+        abs_powers = {}
         for name, (low, high) in bands.items():
             mask = (self.last_f >= low) & (self.last_f < high)
-            band_power = np.sum(Sxx_linear[mask, :])
-            rel_power = np.clip(band_power / total_power, 0.0, None)
-            power_dict[name] = rel_power
+            # Integrate across frequency (axis=0), get power at each time bin
+            band_power_time_series = np.trapz(Sxx_linear[mask, :], self.last_f[mask], axis=0)
+            # Sum across time to get total absolute power
+            abs_power = np.sum(band_power_time_series)
+            abs_powers[name] = abs_power
 
-        return power_dict
+        total_power = sum(abs_powers.values())
+        rel_powers = {}
+        for name in abs_powers:
+            if total_power < 1e-18:
+                rel_powers[name] = 0.0
+            else:
+                rel_powers[name] = abs_powers[name] / total_power
 
+        return {
+            'absolute': abs_powers,
+            'relative': rel_powers
+        }

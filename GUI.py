@@ -540,13 +540,21 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
             )
             return
 
-        band_ratios = self.canvas.calculate_band_powers()
+        powers = self.canvas.calculate_band_powers()
         total_power = self.canvas.calculate_absolute_power()
 
-        if band_ratios is not None and total_power is not None:
+        if powers is not None and total_power is not None:
             msg = f"{total_power:.6f}\n"
-            for band, ratio in band_ratios.items():
+
+            for band in powers['relative']:
+                ratio = powers['relative'][band]
                 msg += f"{100 * ratio:.2f}\n"
+
+            for band in powers['absolute']:
+                abs_power = powers['absolute'][band]
+                msg += f"{abs_power:.2f}\n"
+        else:
+            msg = "0.000000\n" + "0.00\n" * 6 + "0.00\n" * 6  # fallback: one total, six bands
 
         # Show a dialog with selectable and copyable text
         text_dialog = QtWidgets.QDialog(self)
@@ -564,6 +572,7 @@ class SpectrogramGeneratorGUI(QtWidgets.QMainWindow):
 
         text_dialog.resize(400, 300)
         text_dialog.exec_()
+
 
     def export_png_transparent(self):
         if not self.canvas.currently_plotted_items:
